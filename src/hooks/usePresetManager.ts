@@ -48,24 +48,48 @@ export function usePresetManager() {
     return patch;
   };
 
+  /* ── Effects ── */
+  const lastFetchedConfig = useRef({ baseUrl: "", apiKey: "" });
+
+  useEffect(() => {
+    const { baseUrl, apiKey } = settings;
+    if (baseUrl && apiKey) {
+      if (baseUrl !== lastFetchedConfig.current.baseUrl || apiKey !== lastFetchedConfig.current.apiKey) {
+        const timer = setTimeout(() => {
+          void handleLoadModels();
+        }, 1200);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [settings.baseUrl, settings.apiKey]);
+
   /* ── Models ── */
 
   const handleLoadModels = async () => {
+    const { baseUrl, apiKey } = settings;
+    
+    // 如果是手动点击，且没填配置，给个明确提示
+    if (!baseUrl || !apiKey) {
+      setStatus("请先填写 Base URL 和 API Key 以获取模型列表。", "error");
+      return;
+    }
+
     setIsLoadingModels(true);
     setStatus("正在拉取模型列表...", "pending");
     try {
       const res = await postJSON<{ models: string[] }>(API_ROUTES.models, {
-        llmConfig: {
-          baseUrl: settings.baseUrl,
-          apiKey: settings.apiKey
-        }
+        llmConfig: { baseUrl, apiKey }
       });
       const list = Array.isArray(res.models) ? res.models : [];
       setModels(list);
-      if (!settings.model && list[0]) {
+      
+      // 只有在当前没有选中模型，且列表有值时，才自动选第一个
+      if (!settings.model && list.length > 0) {
         updateSetting("model", list[0]);
       }
-      setStatus(`模型列表拉取成功（${list.length} 个）`, "ok");
+      
+      lastFetchedConfig.current = { baseUrl, apiKey };
+      setStatus(list.length > 0 ? `模型列表已更新（${list.length} 个）` : "已连接但未获取到模型列表", "ok");
     } catch (error) {
       setStatus(`模型列表拉取失败：${String((error as Error).message || error)}`, "error");
     } finally {

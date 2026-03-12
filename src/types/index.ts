@@ -14,6 +14,7 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  isEnded?: boolean; // True if the adventure has ended
 }
 
 export interface Preset {

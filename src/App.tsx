@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "./store/useAppStore";
 import { parseAssistantContent, isEndingText } from "./lib/parseHelpers";
 import { API_ROUTES } from "../shared/contracts.js";
@@ -9,17 +9,16 @@ import {
   sessionTitleFromSettings
 } from "./lib/loreHelpers";
 import type { CareerOption } from "./lib/loreHelpers";
-import { runStreamInteraction } from "./lib/streamInteraction";
 import { AdminView } from "./components/AdminView";
 import { ShelfView } from "./components/ShelfView";
 import { PlayView } from "./components/PlayView";
 import { useNavigation } from "./hooks/useNavigation";
 import { usePresetManager } from "./hooks/usePresetManager";
+import { useAdventure } from "./hooks/useAdventure";
 import type { Preset, Settings, StreamMetaView } from "./types";
 
 export default function App() {
   const { view, navigate } = useNavigation();
-
   const pm = usePresetManager();
 
   // Zustand selectors – subscribe only to needed slices
@@ -30,28 +29,21 @@ export default function App() {
   const status = useAppStore((s) => s.status);
 
   // Actions are stable references – read once
-  const {
-    init,
-    setStatus,
-    updateSettings,
-    createSession,
-    selectSession,
-    persistSessionsNow,
-    clearSessionForRestart,
-    setSessionBackendId,
-    updateSessionTitle,
-    addMessage,
-    appendToMessage
-  } = useAppStore.getState();
+  const storeActions = useMemo(() => useAppStore.getState(), []);
+  const { init, setStatus } = storeActions;
 
-  const [isStarting, setIsStarting] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [liveMeta, setLiveMeta] = useState<StreamMetaView | null>(null);
+  const {
+    isStarting,
+    isSending,
+    liveMeta,
+    setLiveMeta,
+    startAdventureForSession,
+    sendActionText
+  } = useAdventure();
+
   const [careerPickerPresetId, setCareerPickerPresetId] = useState("");
   const [selectedCareerName, setSelectedCareerName] = useState("");
 
-  const waitingTimerRef = useRef<number | null>(null);
-  const waitingStartedRef = useRef(0);
   const chatRef = useRef<HTMLDivElement | null>(null);
 
   const scrollChatToBottom = () => {
@@ -162,175 +154,24 @@ export default function App() {
     return () => cancelAnimationFrame(rafId);
   }, [isStreaming, view, activeSessionId]);
 
-  useEffect(
-    () => () => {
-      if (waitingTimerRef.current) {
-        window.clearInterval(waitingTimerRef.current);
-      }
-    },
-    []
-  );
-
-  const stopWaitingTicker = () => {
-    if (waitingTimerRef.current) {
-      window.clearInterval(waitingTimerRef.current);
-      waitingTimerRef.current = null;
-    }
-  };
-
-  const startWaitingTicker = () => {
-    stopWaitingTicker();
-    waitingStartedRef.current = Date.now();
-    waitingTimerRef.current = window.setInterval(() => {
-      const sec = Math.max(1, Math.floor((Date.now() - waitingStartedRef.current) / 1000));
-      setStatus(`请求已发出，等待响应中（${sec}s）`, "pending");
-    }, 1000);
-  };
-
-  const executeStreamInteraction = (params: {
-    sessionId: string;
-    endpoint: typeof API_ROUTES.gameStartStream | typeof API_ROUTES.gameActStream;
-    body: Record<string, unknown>;
-    successLabel: string;
-    modelLabel?: string;
-    onSession?: (backendSessionId: string) => void;
-    onMeta?: (meta: StreamMetaView) => void;
-  }) =>
-    runStreamInteraction(params, {
-      addMessage,
-      appendToMessage,
-      persistSessionsNow,
-      setStatus,
-      stopWaitingTicker
-    });
-
-  const startAdventureForSession = async (sessionId: string, runtimeSettings: Settings, forcedTitle?: string) => {
-    const modelName = runtimeSettings.model.trim();
-    if (!modelName || !runtimeSettings.baseUrl.trim() || !runtimeSettings.apiKey.trim()) {
-      setStatus("该剧本未配置可用模型服务，请联系管理员预设 API。", "error");
-      return;
-    }
-
-    setLiveMeta(null);
-    setIsStarting(true);
-    clearSessionForRestart(sessionId);
-
-    const title = forcedTitle ? forcedTitle.slice(0, 40) : sessionTitleFromSettings(runtimeSettings);
-    updateSessionTitle(sessionId, title);
-
-    setStatus(`准备开场（模型：${modelName}）...`, "pending");
-    startWaitingTicker();
-
-    let nextBackendSessionId = "";
-    const result = await executeStreamInteraction({
-      sessionId,
-      endpoint: API_ROUTES.gameStartStream,
-      body: {
-        llmConfig: {
-          baseUrl: runtimeSettings.baseUrl,
-          apiKey: runtimeSettings.apiKey,
-          model: modelName
-        },
-        gmPrompt: runtimeSettings.gmPrompt,
-        ruleset: runtimeSettings.ruleset,
-        worldName: runtimeSettings.worldName,
-        worldbook: runtimeSettings.worldbook,
-        scenarioScript: runtimeSettings.scenarioScript,
-        characterName: runtimeSettings.characterName,
-        characterProfile: runtimeSettings.characterProfile
-      },
-      successLabel: "模型请求成功",
-      modelLabel: modelName,
-      onSession: (backendSessionId) => {
-        nextBackendSessionId = backendSessionId;
-      },
-      onMeta: (meta) => {
-        setLiveMeta((prev: StreamMetaView | null) => ({
-          check: meta.check || prev?.check || "",
-          status: meta.status || prev?.status || "",
-          ended: meta.ended
-        }));
-      }
-    });
-
-    if (result.ok) {
-      setSessionBackendId(sessionId, nextBackendSessionId);
-    } else {
-      addMessage(sessionId, "error", result.error);
-      setStatus(`模型请求失败（${modelName}）：${result.error}`, "error");
-    }
-
-    stopWaitingTicker();
-    setIsStarting(false);
-  };
-
-  const handleStartAdventure = async () => {
+  const handleStartAdventure = useCallback(async () => {
     if (!activeSession) return;
     if (activeSession.messages.length > 0 && !window.confirm("确认重开？当前进度将被清空。")) return;
     const runtimeSettings = useAppStore.getState().settings;
     await startAdventureForSession(activeSession.localId, runtimeSettings);
-  };
+  }, [activeSession, startAdventureForSession]);
 
-  const sendActionText = async (action: string) => {
+  const handleSendAction = useCallback(async (action: string) => {
     if (!activeSession) return;
-    if (isCurrentRoundEnded) {
-      setStatus("本次冒险已结束，请点击「重开剧情」开始新章节。", "ok");
-      return;
-    }
-    const finalAction = action.trim();
-    if (!finalAction) return;
-    if (!activeSession.backendSessionId) {
-      setStatus("当前会话未开场，请先开始开场。", "error");
-      return;
-    }
+    await sendActionText(
+      activeSession.localId,
+      activeSession.backendSessionId,
+      action,
+      isCurrentRoundEnded
+    );
+  }, [activeSession, sendActionText, isCurrentRoundEnded]);
 
-    setIsSending(true);
-    setLiveMeta(null);
-
-    addMessage(activeSession.localId, "user", finalAction);
-
-    setStatus("行动已发送，等待回应...", "pending");
-    startWaitingTicker();
-
-    const result = await executeStreamInteraction({
-      sessionId: activeSession.localId,
-      endpoint: API_ROUTES.gameActStream,
-      body: {
-        sessionId: activeSession.backendSessionId,
-        action: finalAction
-      },
-      successLabel: "模型请求成功",
-      onMeta: (meta) => {
-        setLiveMeta((prev: StreamMetaView | null) => ({
-          check: meta.check || prev?.check || "",
-          status: meta.status || prev?.status || "",
-          ended: meta.ended
-        }));
-      }
-    });
-
-    if (!result.ok) {
-      addMessage(activeSession.localId, "error", result.error);
-      setStatus(`模型请求失败：${result.error}`, "error");
-    }
-
-    stopWaitingTicker();
-    setIsSending(false);
-  };
-
-  const openCareerPickerForPreset = (preset: Preset) => {
-    const options = careerOptionsByPresetId.get(preset.id) || [];
-    if (!options.length) {
-      void handleStartFromShelf(preset);
-      return;
-    }
-    const defaultCareer =
-      options.find((option) => option.name === settings.characterName)?.name || options[0]?.name || "";
-    setCareerPickerPresetId(preset.id);
-    setSelectedCareerName(defaultCareer);
-  };
-
-  const handleStartFromShelf = async (preset: Preset, chosenCareer = "") => {
+  const handleStartFromShelf = useCallback(async (preset: Preset, chosenCareer = "") => {
     const patch = patchFromLore(preset.data);
     const base = useAppStore.getState().settings;
     const runtimeSettings: Settings = { ...base, ...patch };
@@ -344,40 +185,60 @@ export default function App() {
     }
 
     if (Object.keys(patch).length) {
-      updateSettings(patch);
+      storeActions.updateSettings(patch);
     }
 
-    if (existing && existing.messages.length > 0) {
-      selectSession(existing.localId);
+    // For ended sessions or sessions with no messages, clear and restart
+    const shouldRestart = existing && (existing.isEnded || existing.messages.length === 0);
+    if (shouldRestart) {
+      storeActions.clearSessionForRestart(existing.localId);
+      storeActions.selectSession(existing.localId);
       navigate("play");
-      setStatus(`已恢复进度：${preset.name}`, "ok");
+      await startAdventureForSession(existing.localId, runtimeSettings, preset.name);
       return;
     }
 
-    const sessionId =
-      existing?.localId ||
-      createSession({
-        title: preset.name.slice(0, 40),
-        sourcePresetId: preset.id
-      });
+    if (existing && existing.messages.length > 0) {
+      storeActions.selectSession(existing.localId);
+      navigate("play");
+      storeActions.setStatus(`已恢复进度：${preset.name}`, "ok");
+      return;
+    }
 
-    selectSession(sessionId);
+    const sessionId = storeActions.createSession({
+      title: preset.name.slice(0, 40),
+      sourcePresetId: preset.id
+    });
+
+    storeActions.selectSession(sessionId);
     navigate("play");
     await startAdventureForSession(sessionId, runtimeSettings, preset.name);
-  };
+  }, [latestSessionByPresetId, storeActions, navigate, startAdventureForSession]);
 
-  const handleConfirmCareerAndStart = async () => {
+  const openCareerPickerForPreset = useCallback((preset: Preset) => {
+    const options = careerOptionsByPresetId.get(preset.id) || [];
+    if (!options.length) {
+      void handleStartFromShelf(preset);
+      return;
+    }
+    const defaultCareer =
+      options.find((option) => option.name === settings.characterName)?.name || options[0]?.name || "";
+    setCareerPickerPresetId(preset.id);
+    setSelectedCareerName(defaultCareer);
+  }, [careerOptionsByPresetId, settings.characterName, handleStartFromShelf]);
+
+  const handleConfirmCareerAndStart = useCallback(async () => {
     if (!careerPickerPreset) return;
     const chosen = selectedCareerName.trim();
     if (!chosen) {
-      setStatus("请先选择职业。", "error");
+      storeActions.setStatus("请先选择职业。", "error");
       return;
     }
     const preset = careerPickerPreset;
     setCareerPickerPresetId("");
     setSelectedCareerName("");
     await handleStartFromShelf(preset, chosen);
-  };
+  }, [careerPickerPreset, selectedCareerName, handleStartFromShelf]);
 
   /* ── Render ── */
 
@@ -418,14 +279,15 @@ export default function App() {
           careerPickerPreset={careerPickerPreset}
           careerPickerOptions={careerPickerOptions}
           selectedCareerName={selectedCareerName}
-          onStartFromShelf={(preset) => void handleStartFromShelf(preset)}
+          onStartFromShelf={handleStartFromShelf}
           onOpenCareerPicker={openCareerPickerForPreset}
           onSetSelectedCareerName={setSelectedCareerName}
           onCancelCareerPicker={() => {
             setCareerPickerPresetId("");
             setSelectedCareerName("");
           }}
-          onConfirmCareerAndStart={() => void handleConfirmCareerAndStart()}
+          onConfirmCareerAndStart={handleConfirmCareerAndStart}
+          onNavigateToAdmin={() => navigate("admin")}
         />
       ) : (
         <PlayView
@@ -438,8 +300,9 @@ export default function App() {
           latestMetaView={latestMetaView}
           chatRef={chatRef}
           onNavigate={() => navigate("library")}
-          onStartAdventure={() => void handleStartAdventure()}
-          onSendAction={(text) => void sendActionText(text)}
+          onNavigateToAdmin={() => navigate("admin")}
+          onStartAdventure={handleStartAdventure}
+          onSendAction={handleSendAction}
         />
       )}
     </main>

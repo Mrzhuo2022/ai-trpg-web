@@ -11,6 +11,41 @@ export const STORAGE_KEYS = {
   presetSeedVersion: "trpg_preset_seed_version_v1"
 } as const;
 
+/** Cache size limits */
+export const CACHE_LIMITS = {
+  PARSED_CONTENT: 100,
+  RECENT_SESSIONS: 50,
+  DIAGNOSTICS: 300,
+} as const;
+
+/** Timeouts in milliseconds */
+export const TIMEOUTS = {
+  DEBOUNCE_INPUT: 300,
+  DEBOUNCE_SEARCH: 500,
+  THROTTLE_SCROLL: 100,
+  THROTTLE_RESIZE: 200,
+  LLM_REQUEST: 120000, // 2 minutes
+  CACHE_CLEANUP: 60000, // 1 minute
+  SESSION_TTL: 21600000, // 6 hours
+} as const;
+
+/** UI limits */
+export const UI_LIMITS = {
+  MAX_TITLE_LENGTH: 40,
+  MAX_INPUT_HEIGHT: 200,
+  MAX_QUICK_OPTIONS: 5,
+  MAX_SESSION_MESSAGES: 42,
+  MAX_DIAGNOSTICS: 300,
+} as const;
+
+/** Status messages */
+export const STATUS_MESSAGES = {
+  CONNECTION_ERROR: "无法连接到后端服务，请检查后端是否已启动 (Port 3157)。",
+  RESPONSE_INCOMPLETE: "连接中断：模型响应未完整结束。请检查网络或接口服务。",
+  SESSION_EXPIRED: "会话已过期（长时间无操作），请重新开始。",
+  EMPTY_RESPONSE: "LLM 返回内容为空，请检查模型与接口兼容性。",
+} as const;
+
 export const DEFAULT_SETTINGS: Settings = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",

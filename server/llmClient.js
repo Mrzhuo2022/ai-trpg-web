@@ -1,3 +1,5 @@
+import { SERVER_CONFIG } from "./config.js";
+
 function normalizeTextValue(value) {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -22,8 +24,10 @@ function normalizeTextValue(value) {
 }
 
 function extractResponseText(json) {
+  const message = json?.choices?.[0]?.message;
   return (
-    normalizeTextValue(json?.choices?.[0]?.message?.content) ||
+    normalizeTextValue(message?.content) ||
+    normalizeTextValue(message?.reasoning_content) ||
     normalizeTextValue(json?.choices?.[0]?.text) ||
     normalizeTextValue(json?.output_text) ||
     normalizeTextValue(json?.output?.[0]?.content) ||
@@ -43,7 +47,14 @@ function extractStreamDeltaText(json) {
 }
 
 export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus, onToken }) {
-  const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+  let normalizedBaseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
+  normalizedBaseUrl = normalizedBaseUrl.replace(/\/chat\/completions$/, "");
+  
+  if (!normalizedBaseUrl && apiKey.startsWith("sk-")) {
+    normalizedBaseUrl = "https://api.openai.com/v1";
+  }
+
+  const endpoint = `${normalizedBaseUrl}/chat/completions`;
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeoutMs = 120000;
@@ -54,6 +65,7 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
   const baseRequest = {
     model,
     temperature: 0.85,
+    max_tokens: SERVER_CONFIG.defaultMaxTokens,
     messages
   };
 
@@ -93,7 +105,13 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
     );
   };
 
-  let res = await fetchWithRetry(true, 1);
+  let res;
+  try {
+    res = await fetchWithRetry(true, 1);
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
 
   try {
     if (!res.ok) {

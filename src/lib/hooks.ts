@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 /**
  * Debounce hook for input values
@@ -59,5 +59,3 @@ export function useIsMounted(): () => boolean {
 
   return useCallback(() => isMountedRef.current, []);
 }
-
-import { useRef } from "react";

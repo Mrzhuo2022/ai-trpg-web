@@ -142,7 +142,7 @@ export function measureTime<T extends (...args: unknown[]) => unknown>(
 /**
  * Batch multiple updates into a single render
  */
-export function batchUpdates<T>(updates: Array<() => T>, batchSize: number = 10): T[] {
+export function batchUpdates<T>(updates: Array<() => T>, batchSize = 10): T[] {
   const results: T[] = [];
   for (let i = 0; i < updates.length; i += batchSize) {
     const batch = updates.slice(i, i + batchSize);

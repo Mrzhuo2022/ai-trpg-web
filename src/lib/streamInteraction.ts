@@ -36,6 +36,7 @@ export interface StreamInteractionDeps {
   persistSessionsNow: () => void;
   setStatus: (text: string, type?: "idle" | "pending" | "ok" | "error") => void;
   stopWaitingTicker: () => void;
+  markSessionEnded?: (sessionId: string) => void;
 }
 
 export interface StreamInteractionParams {
@@ -50,7 +51,7 @@ export interface StreamInteractionParams {
 
 export async function runStreamInteraction(params: StreamInteractionParams, deps: StreamInteractionDeps) {
   const { sessionId, endpoint, body, successLabel, modelLabel, onSession, onMeta } = params;
-  const { addMessage, appendToMessage, persistSessionsNow, setStatus, stopWaitingTicker } = deps;
+  const { addMessage, appendToMessage, persistSessionsNow, setStatus, stopWaitingTicker, markSessionEnded } = deps;
   const messageId = addMessage(sessionId, "assistant", "");
 
   try {
@@ -73,7 +74,9 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
 
       if (event === SSE_EVENTS.token) {
         const payload = rawPayload as TokenEventPayload;
-        appendToMessage(sessionId, messageId, String(payload.token || ""));
+        const token = String(payload.token || "");
+        // Direct append - no character queue for simplicity and correctness
+        appendToMessage(sessionId, messageId, token);
         return;
       }
 
@@ -85,12 +88,20 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
 
       if (event === SSE_EVENTS.meta) {
         const payload = rawPayload as MetaEventPayload;
+        const ended = Boolean(payload.ended);
         onMeta?.({
           check: typeof payload.check === "string" ? payload.check.trim() : "",
           status: typeof payload.status === "string" ? payload.status.trim() : "",
-          ended: Boolean(payload.ended)
+          ended
         });
+
+        // Mark session as ended if the meta says so
+        if (ended && markSessionEnded) {
+          markSessionEnded(sessionId);
+        }
+
         const markerOnly = embedMetaMarker(payload);
+        // Meta markers appended directly - no queue
         appendToMessage(sessionId, messageId, markerOnly);
         return;
       }

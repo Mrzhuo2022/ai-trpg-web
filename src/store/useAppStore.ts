@@ -31,6 +31,7 @@ interface AppState {
   clearSessionForRestart: (id: string) => void;
   setSessionBackendId: (id: string, backendId: string) => void;
   updateSessionTitle: (id: string, title: string) => void;
+  markSessionEnded: (id: string) => void;
 
   addMessage: (sessionId: string, role: ChatRole, content: string) => string;
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
@@ -56,7 +57,8 @@ function normalizeSession(raw: Partial<Session>): Session {
             role: (m.role as ChatRole) || "assistant",
             content: typeof m.content === "string" ? m.content : ""
           }))
-      : []
+      : [],
+    isEnded: Boolean(raw.isEnded)
   };
 }
 
@@ -141,7 +143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearSessionForRestart: (id) => {
     const sessions = get().sessions.map((s) =>
       s.localId === id
-        ? { ...s, backendSessionId: "", messages: [], updatedAt: Date.now() }
+        ? { ...s, backendSessionId: "", messages: [], isEnded: false, updatedAt: Date.now() }
         : s
     );
     saveSessions(sessions);
@@ -159,6 +161,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateSessionTitle: (id, title) => {
     const sessions = get().sessions.map((s) =>
       s.localId === id ? { ...s, title: title || s.title, updatedAt: Date.now() } : s
+    );
+    saveSessions(sessions);
+    set({ sessions });
+  },
+
+  markSessionEnded: (id) => {
+    const sessions = get().sessions.map((s) =>
+      s.localId === id ? { ...s, isEnded: true, updatedAt: Date.now() } : s
     );
     saveSessions(sessions);
     set({ sessions });
@@ -188,6 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: s.messages.map((m) => (m.id === messageId ? { ...m, content: m.content + chunk } : m))
       };
     });
+    // Batch update without persisting on every chunk
     set({ sessions });
   },
 

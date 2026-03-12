@@ -47,7 +47,7 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
     return [systemMessage, ...rest.slice(-(maxSessionMessages - 1))];
   }
 
-  function create({ sessionId, llmConfig, systemPrompt, finalReply }) {
+  function create({ sessionId, llmConfig, systemPrompt, initialUserMessage, finalReply }) {
     const now = Date.now();
     sessions.set(sessionId, {
       createdAt: now,
@@ -55,6 +55,7 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
       llmConfig,
       messages: [
         { role: "system", content: systemPrompt },
+        { role: "user", content: initialUserMessage },
         { role: "assistant", content: finalReply }
       ]
     });

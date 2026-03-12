@@ -27,7 +27,15 @@ const optionalTrimmedStringSchema = z.preprocess((value) => (typeof value === "s
 
 function requiredTrimmedStringSchema(fieldLabel) {
   return z.preprocess(
-    (value) => (typeof value === "string" ? value.trim() : value),
+    (value) => {
+      if (typeof value !== "string") return value;
+      let val = value.trim();
+      // 如果是 baseUrl 且不含协议，尝试补全（仅针对常见模型 API）
+      if (fieldLabel === "baseUrl" && val && !/^https?:\/\//i.test(val)) {
+        val = `https://${val}`;
+      }
+      return val;
+    },
     z.string().min(1, `${fieldLabel} 不能为空。`)
   );
 }
