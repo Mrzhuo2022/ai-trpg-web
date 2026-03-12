@@ -1,4 +1,28 @@
-# AI TRPG Console (React + Zustand + TypeScript)
+# AI TRPG Console
+
+基于 React + Zustand + TypeScript 的 AI 驱动 TRPG（桌上角色扮演游戏）平台。
+
+## ✨ 特性
+
+### 用户端
+- 📚 **书架系统** - 选择剧本直接开场
+- 🎮 **沉浸式游玩** - 流式输出，实时响应
+- 🎯 **智能判定** - 自动 d20 掷骰与 DC 计算
+- 🔄 **重新开始** - 已结束剧本可快速重开
+- 💾 **自动保存** - 本地会话持久化
+
+### 管理端
+- 🔧 **API 配置** - 支持 OpenAI 兼容接口
+- 👁️ **安全输入** - API Key 显示/隐藏切换
+- 📝 **剧本编辑** - 世界观、角色、规则自定义
+- 💾 **预设管理** - 保存/加载/导入/导出
+- 🎨 **响应式设计** - 自适应各种屏幕
+
+### 性能优化
+- ⚡ **LRU 缓存** - 解析结果缓存
+- 🔄 **自动重试** - 指数退避重试机制
+- 🧹 **内存管理** - 防止内存泄漏
+- 📦 **批量更新** - 减少 localStorage 写入
 
 ## 页面划分
 
@@ -6,18 +30,19 @@
 - 用户端游玩：`/play`
 - 管理端：`/admin`
 
-说明：用户端不显示管理配置入口；管理端通过 URL 进入。
-
 ## 用户端功能
 
 - 书架选剧本，点一本直接开场
 - 沉浸式聊天游玩界面
 - 主持人回复支持结构化 `meta`（选项/判定/状态/结局），并渲染为可点击按钮
 - 也支持自定义输入行动
+- 剧本结束后可重新开始
 
 ## 管理端功能
 
 - 配置 Base URL / API Key / Model
+- API Key 显示/隐藏切换
+- 优化模型选择下拉框
 - 编辑世界观、规则、角色、主持人提示词
 - 预设保存/加载/删除
 - JSON 导入/导出预设
@@ -94,6 +119,7 @@ SSE 事件（`start-stream` / `act-stream`）：
 - `SESSION_SWEEP_INTERVAL_MS`：后台清理周期（默认 `60000`）
 - `MAX_SESSION_MESSAGES`：单会话消息上限（默认 `42`，含 system）
 - `MAX_DIAGNOSTICS`：内存诊断日志上限（默认 `300`）
+- `DEFAULT_MAX_TOKENS`：LLM 响应最大 token 数（默认 `1000`）
 
 ## 后端结构
 
@@ -104,3 +130,45 @@ SSE 事件（`start-stream` / `act-stream`）：
 - 元信息提取：`server/meta.js`
 - 提示词构建：`server/prompts.js`
 - 状态与诊断存储：`server/stores/*.js`
+
+## 技术栈
+
+**前端**
+- React 18 + TypeScript
+- Zustand（状态管理）
+- Vite（构建工具）
+- SSE（服务器推送）
+
+**后端**
+- Node.js + Express
+- OpenAI API（LLM 接口）
+- Zod（数据校验）
+
+## 开发
+
+```bash
+npm install
+```
+
+开发模式：
+
+终端 A（后端）：
+```bash
+npm run dev
+```
+
+终端 B（前端）：
+```bash
+npm run dev:web
+```
+
+生产构建：
+
+```bash
+npm run build:web
+npm run start
+```
+
+## License
+
+MIT
