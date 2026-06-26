@@ -50,33 +50,28 @@
 ## 启动
 
 ```bash
-cd /home/evarle/Codefiles/ai-trpg-web
 npm install
 ```
 
-开发：
+### 开发（推荐：一键启动前后端）
 
-终端 A：
 ```bash
-npm run dev
+npm run dev:all
 ```
 
-终端 B：
-```bash
-npm run dev:web
-```
+一条命令同时启动后端 API（默认 `3157`）与前端 Vite 开发服务（默认 `5173`，带热更新）。
+日志会以 `[api]` / `[web]` 前缀区分。打开 `http://localhost:5173` 即可游玩。
 
-说明：
+> 也可以分别启动：`npm run dev`（后端）、`npm run dev:web`（前端）。
 
-- `3157` 端口是纯 API 服务（不再托管前端页面）
-- 前端页面请使用 Vite 开发端口（默认 `5173`）
-
-生产：
+### 生产（单进程）
 
 ```bash
 npm run build:web
-npm run start
+npm start
 ```
+
+构建后，后端会自动托管 `dist/` 静态资源，只需一个进程。打开 `http://localhost:3157` 即可游玩完整应用。
 
 ## API
 

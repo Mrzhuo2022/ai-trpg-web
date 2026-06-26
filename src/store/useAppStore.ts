@@ -11,7 +11,7 @@ import {
   saveSettings
 } from "../lib/storage";
 import { uid } from "../lib/utils";
-import type { AppStatus, ChatRole, Preset, Session, Settings } from "../types";
+import type { AppStatus, CharacterState, ChatRole, Pressure, Preset, RollRecord, Session, Settings } from "../types";
 
 interface AppState {
   settings: Settings;
@@ -32,9 +32,15 @@ interface AppState {
   setSessionBackendId: (id: string, backendId: string) => void;
   updateSessionTitle: (id: string, title: string) => void;
   markSessionEnded: (id: string) => void;
+  /** 同步某会话的运行时状态（运气点、掷骰历史、压力、角色状态）—— 由 useAdventure 在收到 meta 后调用 */
+  syncSessionRuntime: (id: string, patch: Partial<Pick<Session, "luckPoints" | "maxLuckPoints" | "rollHistory" | "pressure" | "characterState">>) => void;
+  addRollRecord: (id: string, record: RollRecord) => void;
+  spendLuck: (id: string, amount?: number) => void;
 
   addMessage: (sessionId: string, role: ChatRole, content: string) => string;
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  /** 替换最后一条 assistant 消息（用于重生成/重投） */
+  replaceLastAssistantMessage: (sessionId: string, content: string) => void;
 
   savePreset: (name: string, data: Preset["data"]) => { ok: boolean; message: string };
   loadPresetById: (id: string) => Preset | null;
@@ -58,7 +64,16 @@ function normalizeSession(raw: Partial<Session>): Session {
             content: typeof m.content === "string" ? m.content : ""
           }))
       : [],
-    isEnded: Boolean(raw.isEnded)
+    isEnded: Boolean(raw.isEnded),
+    luckPoints: typeof raw.luckPoints === "number" ? raw.luckPoints : 0,
+    maxLuckPoints: typeof raw.maxLuckPoints === "number" ? raw.maxLuckPoints : 0,
+    rollHistory: Array.isArray(raw.rollHistory) ? raw.rollHistory : [],
+    pressure: raw.pressure && typeof raw.pressure === "object" && typeof raw.pressure.level === "number"
+      ? (raw.pressure as Pressure)
+      : { level: 0, hint: "局势平稳，可以谨慎推进。" },
+    characterState: (raw.characterState && typeof raw.characterState === "object" && typeof (raw.characterState as CharacterState).hp === "object")
+      ? (raw.characterState as CharacterState)
+      : null
   };
 }
 
@@ -85,7 +100,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         title: "新跑团",
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        messages: []
+        messages: [],
+        luckPoints: 0,
+        maxLuckPoints: 0,
+        rollHistory: [],
+        pressure: { level: 0, hint: "局势平稳，可以谨慎推进。" }
       };
       sessions = [newSession];
       nextActive = newSession.localId;
@@ -121,7 +140,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       title: options?.title?.trim() || "新跑团",
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      messages: []
+      messages: [],
+      luckPoints: 0,
+      maxLuckPoints: 0,
+      rollHistory: [],
+      pressure: { level: 0, hint: "局势平稳，可以谨慎推进。" }
     };
 
     const sessions = [newSession, ...get().sessions];
@@ -143,7 +166,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearSessionForRestart: (id) => {
     const sessions = get().sessions.map((s) =>
       s.localId === id
-        ? { ...s, backendSessionId: "", messages: [], isEnded: false, updatedAt: Date.now() }
+        ? {
+            ...s,
+            backendSessionId: "",
+            messages: [],
+            isEnded: false,
+            luckPoints: 0,
+            maxLuckPoints: 0,
+            rollHistory: [],
+            pressure: { level: 0, hint: "局势平稳，可以谨慎推进。" },
+            characterState: null,
+            updatedAt: Date.now()
+          }
         : s
     );
     saveSessions(sessions);
@@ -199,6 +233,50 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
     // Batch update without persisting on every chunk
+    set({ sessions });
+  },
+
+  replaceLastAssistantMessage: (sessionId, content) => {
+    const sessions = get().sessions.map((s) => {
+      if (s.localId !== sessionId) return s;
+      const messages = [...s.messages];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          messages[i] = { ...messages[i], content };
+          break;
+        }
+      }
+      return { ...s, messages, updatedAt: Date.now() };
+    });
+    saveSessions(sessions);
+    set({ sessions });
+  },
+
+  syncSessionRuntime: (id, patch) => {
+    const sessions = get().sessions.map((s) =>
+      s.localId === id ? { ...s, ...patch, updatedAt: Date.now() } : s
+    );
+    saveSessions(sessions);
+    set({ sessions });
+  },
+
+  addRollRecord: (id, record) => {
+    const sessions = get().sessions.map((s) => {
+      if (s.localId !== id) return s;
+      const history = [...(s.rollHistory || []), record].slice(-100);
+      return { ...s, rollHistory: history, updatedAt: Date.now() };
+    });
+    saveSessions(sessions);
+    set({ sessions });
+  },
+
+  spendLuck: (id, amount = 1) => {
+    const sessions = get().sessions.map((s) => {
+      if (s.localId !== id) return s;
+      const current = s.luckPoints ?? 0;
+      return { ...s, luckPoints: Math.max(0, current - amount), updatedAt: Date.now() };
+    });
+    saveSessions(sessions);
     set({ sessions });
   },
 

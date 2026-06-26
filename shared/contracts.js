@@ -47,6 +47,15 @@ const modelsRequestSchema = z.object({
   })
 });
 
+const optionalNumberStringSchema = z.preprocess(
+  (value) => {
+    if (value === null || value === undefined || value === "") return "";
+    const n = Number(value);
+    return Number.isFinite(n) ? String(Math.floor(n)) : "";
+  },
+  z.string()
+);
+
 const startRequestSchema = z.object({
   llmConfig: z.object({
     baseUrl: requiredTrimmedStringSchema("baseUrl"),
@@ -60,12 +69,37 @@ const startRequestSchema = z.object({
   scenarioScript: optionalTrimmedStringSchema,
   characterName: optionalTrimmedStringSchema,
   characterProfile: optionalTrimmedStringSchema,
-  worldSeed: optionalTrimmedStringSchema
+  worldSeed: optionalTrimmedStringSchema,
+  // 角色属性（D&D 5e 六维），字符串形式存数字
+  attrStr: optionalNumberStringSchema,
+  attrDex: optionalNumberStringSchema,
+  attrCon: optionalNumberStringSchema,
+  attrInt: optionalNumberStringSchema,
+  attrWis: optionalNumberStringSchema,
+  attrCha: optionalNumberStringSchema,
+  baseHp: optionalNumberStringSchema,
+  baseAc: optionalNumberStringSchema,
+  corruptionName: optionalTrimmedStringSchema,
+  corruptionMax: optionalNumberStringSchema,
+  corruptionThreshold: optionalNumberStringSchema,
+  // 初始物品清单（[{name,qty,unit}]）
+  initialResources: z.array(z.any()).optional()
 });
 
 const actRequestSchema = z.object({
   sessionId: optionalTrimmedStringSchema,
-  action: optionalTrimmedStringSchema
+  action: optionalTrimmedStringSchema,
+  // 玩家请求重投上一次失败的判定（消耗 1 点运气）
+  reroll: z.preprocess((value) => value === true || value === "true", z.boolean()).optional(),
+  // 玩家请求重新生成上一回合叙事（不改骰子，不消耗运气）
+  regenerate: z.preprocess((value) => value === true || value === "true", z.boolean()).optional(),
+  // 重投时附带的原始骰值，用于“保留两次中更好的结果”
+  originalRoll: z
+    .preprocess((value) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.min(20, Math.max(1, Math.floor(n))) : undefined;
+    }, z.number().int().min(1).max(20))
+    .optional()
 });
 
 const diagnosticsQuerySchema = z.object({

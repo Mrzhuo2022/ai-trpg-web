@@ -18,6 +18,19 @@ export function patchFromLore(payload: Partial<LorePayload>): Partial<Settings> 
   if (typeof payload.worldbook === "string") patch.worldbook = payload.worldbook;
   if (typeof payload.scenarioScript === "string") patch.scenarioScript = payload.scenarioScript;
   if (typeof payload.gmPrompt === "string") patch.gmPrompt = payload.gmPrompt;
+  // D&D 5e 结构化属性
+  if (typeof payload.attrStr === "string") patch.attrStr = payload.attrStr;
+  if (typeof payload.attrDex === "string") patch.attrDex = payload.attrDex;
+  if (typeof payload.attrCon === "string") patch.attrCon = payload.attrCon;
+  if (typeof payload.attrInt === "string") patch.attrInt = payload.attrInt;
+  if (typeof payload.attrWis === "string") patch.attrWis = payload.attrWis;
+  if (typeof payload.attrCha === "string") patch.attrCha = payload.attrCha;
+  if (typeof payload.baseHp === "string") patch.baseHp = payload.baseHp;
+  if (typeof payload.baseAc === "string") patch.baseAc = payload.baseAc;
+  if (typeof payload.corruptionName === "string") patch.corruptionName = payload.corruptionName;
+  if (typeof payload.corruptionMax === "string") patch.corruptionMax = payload.corruptionMax;
+  if (typeof payload.corruptionThreshold === "string") patch.corruptionThreshold = payload.corruptionThreshold;
+  if (Array.isArray(payload.initialResources)) patch.initialResources = payload.initialResources;
   return patch;
 }
 
@@ -29,7 +42,19 @@ export function lorePayloadFromSettings(settings: Settings): LorePayload {
     characterProfile: settings.characterProfile,
     worldbook: settings.worldbook,
     scenarioScript: settings.scenarioScript,
-    gmPrompt: settings.gmPrompt
+    gmPrompt: settings.gmPrompt,
+    attrStr: settings.attrStr,
+    attrDex: settings.attrDex,
+    attrCon: settings.attrCon,
+    attrInt: settings.attrInt,
+    attrWis: settings.attrWis,
+    attrCha: settings.attrCha,
+    baseHp: settings.baseHp,
+    baseAc: settings.baseAc,
+    corruptionName: settings.corruptionName,
+    corruptionMax: settings.corruptionMax,
+    corruptionThreshold: settings.corruptionThreshold,
+    initialResources: settings.initialResources
   };
 }
 
@@ -45,7 +70,19 @@ export function sanitizeLorePayload(payload: Partial<LorePayload>, fallback: Set
     characterProfile: pickString(payload.characterProfile, fallback.characterProfile),
     worldbook: pickString(payload.worldbook, fallback.worldbook),
     scenarioScript: pickString(payload.scenarioScript, fallback.scenarioScript),
-    gmPrompt: pickString(payload.gmPrompt, fallback.gmPrompt)
+    gmPrompt: pickString(payload.gmPrompt, fallback.gmPrompt),
+    attrStr: pickString(payload.attrStr, fallback.attrStr),
+    attrDex: pickString(payload.attrDex, fallback.attrDex),
+    attrCon: pickString(payload.attrCon, fallback.attrCon),
+    attrInt: pickString(payload.attrInt, fallback.attrInt),
+    attrWis: pickString(payload.attrWis, fallback.attrWis),
+    attrCha: pickString(payload.attrCha, fallback.attrCha),
+    baseHp: pickString(payload.baseHp, fallback.baseHp),
+    baseAc: pickString(payload.baseAc, fallback.baseAc),
+    corruptionName: pickString(payload.corruptionName, fallback.corruptionName),
+    corruptionMax: pickString(payload.corruptionMax, fallback.corruptionMax),
+    corruptionThreshold: pickString(payload.corruptionThreshold, fallback.corruptionThreshold),
+    initialResources: Array.isArray(payload.initialResources) ? payload.initialResources : fallback.initialResources
   };
 }
 

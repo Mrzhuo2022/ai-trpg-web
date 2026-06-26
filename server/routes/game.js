@@ -8,9 +8,11 @@ import {
 } from "../meta.js";
 import {
   buildOptionFixPrompt,
+  buildRoundContext,
   makeSystemPrompt
 } from "../prompts.js";
-import { rollD20, formatDiceForModel, formatDiceChip, calculateDC } from "../judgeEngine.js";
+import { rollD20, formatDiceForModel, formatDiceChip, calculateDC, evaluateCheckWithAction, applyCheckConsequences, calculatePressure, pressureFromFailStreak } from "../judgeEngine.js";
+import { createCharacterState, summarizeState } from "../characterState.js";
 import { initSSE, sendDone, sendError, sendMeta, sendSession, sendStatus, sendToken } from "../sse.js";
 
 function makeTraceId() {
@@ -112,6 +114,60 @@ async function applyReplyRepairs({ llmConfig, messages, baseReply, trace, res })
 }
 
 /**
+ * 重写上一回合的 GM 叙事（不改骰子、不消耗运气）
+ * 从 session.messages 末尾移除最后一条 assistant 回复，
+ * 用相同的 user+system 上下文重新调一次 LLM。
+ */
+async function regenerateLastReply({ session, trace, res }) {
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  if (messages.length < 2) return false;
+
+  // 找到最后一条 assistant
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  if (lastAssistantIdx <= 0) return false;
+
+  const baseMessages = messages.slice(0, lastAssistantIdx);
+  const ctxMessage = session.pressure
+    ? { role: "system", content: `【回合动态上下文】\n局势压力：${["平稳", "紧张", "危急", "绝境"][session.pressure.level] || "平稳"}（${session.pressure.level}/3）。请据此渲染紧迫感。` }
+    : null;
+
+  const llmMessages = ctxMessage ? [...baseMessages, ctxMessage] : baseMessages;
+
+  trace.statusWithTrace(res, "queued", "重写上一回合叙事...");
+
+  const gmReply = await streamPrimaryReply({
+    llmConfig: session.llmConfig,
+    messages: llmMessages,
+    trace,
+    res
+  });
+  const finalReply = await applyReplyRepairs({
+    llmConfig: session.llmConfig,
+    messages: llmMessages,
+    baseReply: gmReply,
+    trace,
+    res
+  });
+
+  const replyMeta = buildReplyMeta(finalReply);
+  replyMeta.luckPoints = session.luckPoints ?? 0;
+  replyMeta.maxLuckPoints = session.maxLuckPoints ?? 0;
+  replyMeta.pressure = session.pressure || { level: 0, hint: "局势平稳，可以谨慎推进。" };
+  replyMeta.regenerated = true;
+  sendMeta(res, replyMeta);
+
+  session.messages = sessionStore.trimMessages([...llmMessages.slice(0, baseMessages.length), { role: "assistant", content: finalReply }]);
+  sessionStore.touch(session);
+  return true;
+}
+
+/**
  * Handles the common game request lifecycle: tracing, error recording, and response ending.
  */
 async function runGameRequestHandler(req, res, { routeLabel, diagnosticsStore, handler }) {
@@ -170,6 +226,24 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           characterProfile: parsed.characterProfile
         });
 
+        // 初始化角色状态（D&D 5e 结构化属性）
+        const characterState = createCharacterState({
+          attributes: {
+            str: parsed.attrStr,
+            dex: parsed.attrDex,
+            con: parsed.attrCon,
+            int: parsed.attrInt,
+            wis: parsed.attrWis,
+            cha: parsed.attrCha
+          },
+          baseHp: parsed.baseHp,
+          baseAc: parsed.baseAc,
+          corruptionName: parsed.corruptionName || "腐化",
+          corruptionMax: parsed.corruptionMax,
+          corruptionThreshold: parsed.corruptionThreshold,
+          initialResources: Array.isArray(parsed.initialResources) ? parsed.initialResources : []
+        });
+
         const sessionId = crypto.randomUUID();
         const initialUserMessage = "请直接开始第一幕，把我放进一个高风险但可决策的局面。";
         const messages = [
@@ -196,13 +270,20 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           res
         });
 
-        sendMeta(res, buildReplyMeta(finalReply));
+        sendMeta(res, {
+          ...buildReplyMeta(finalReply),
+          luckPoints: sessionStore.initialLuckPoints,
+          maxLuckPoints: sessionStore.initialLuckPoints,
+          pressure: { level: 0, hint: "局势平稳，可以谨慎推进。" },
+          characterState
+        });
         sessionStore.create({
           sessionId,
           llmConfig: cfg,
           systemPrompt,
           initialUserMessage,
-          finalReply
+          finalReply,
+          characterState
         });
 
         sendSession(res, { sessionId, traceId: trace.traceId });
@@ -259,7 +340,7 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           return sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
         }
 
-        if (!parsed.action) {
+        if (!parsed.action && !parsed.reroll && !parsed.regenerate) {
           const message = "行动内容不能为空。";
           trace.record({
             status: "error",
@@ -272,23 +353,134 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
 
         sessionStore.touch(session);
 
-        const roll = rollD20();
-        const dc = calculateDC(parsed.action);
-        
-        if (dc !== null) {
-          const diceChip = formatDiceChip(roll, dc);
+        // ── 重生成分支：不改骰子、不消耗运气，仅重新生成上一回合叙事 ──
+        if (parsed.regenerate) {
+          const regenerated = await regenerateLastReply({ session, trace, res });
+          if (!regenerated) {
+            return sendSSEErrorAndDone(res, { message: "没有可重写的上一回合。", traceId: trace.traceId });
+          }
+          const totalElapsed = trace.elapsedMs();
+          trace.statusWithTrace(res, "completed", "重写完成", totalElapsed);
+          trace.record({
+            status: "ok",
+            phase: "completed",
+            elapsedMs: totalElapsed,
+            model: session.llmConfig?.model || "",
+            baseUrl: session.llmConfig?.baseUrl || "",
+            message: "重写完成"
+          });
+          sendDone(res, true);
+          res.end();
+          return;
+        }
+
+        // ── 准备判定上下文：取最近消息文本用于情境修正与压力推算 ──
+        const contextText = (session.messages || [])
+          .slice(-6)
+          .map((m) => (typeof m?.content === "string" ? m.content : ""))
+          .join("\n");
+
+        const action = parsed.action || "重投上一回合的行动";
+
+        // ── 重投分支：消耗 1 点运气，保留两次中更好的结果 ──
+        let roll;
+        let checkInfo = calculateDC(action, contextText);
+        let isReroll = false;
+        let consumedLuck = false;
+
+        if (parsed.reroll) {
+          if ((session.luckPoints ?? 0) <= 0) {
+            const message = "运气点已耗尽，无法重投。";
+            trace.record({ status: "error", phase: "no_luck", ...diagInfo, message });
+            return sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
+          }
+          isReroll = true;
+          consumedLuck = true;
+          session.luckPoints -= 1;
+
+          // 重投：保留两次中更好的结果
+          const originalRoll = Number.isFinite(parsed.originalRoll) ? parsed.originalRoll : null;
+          const newRoll = rollD20();
+          if (originalRoll !== null && originalRoll >= newRoll) {
+            roll = originalRoll; // 旧骰更好，保留旧结果（但仍消耗运气，叙事可换）
+          } else {
+            roll = newRoll; // 新骰更好，采用新结果
+          }
+        } else {
+          roll = rollD20();
+        }
+
+        // 结构化评估（带属性调整值，D&D 5e 检定）
+        const attributes = session.characterState?.attributes || null;
+        const evaluated = checkInfo
+          ? evaluateCheckWithAction(roll, checkInfo.dc, checkInfo, attributes, action)
+          : null;
+
+        // 应用检定后果（代码化伤害：失败扣 HP/腐化）
+        let damage = null;
+        if (evaluated && session.characterState) {
+          const result = applyCheckConsequences(session.characterState, evaluated);
+          session.characterState = result.state;
+          damage = result.damage;
+        }
+
+        // 推送预动画 meta（前端据此触发掷骰动画）
+        if (evaluated) {
           sendMeta(res, {
             options: [],
-            check: diceChip,
+            check: formatDiceChip(evaluated),
             status: "",
-            ended: false
+            ended: false,
+            roll: evaluated.roll,
+            modifier: evaluated.modifier,
+            attribute: evaluated.attribute,
+            attributeLabel: evaluated.attributeLabel,
+            attributeAbbr: evaluated.attributeAbbr,
+            total: evaluated.total,
+            dc: evaluated.dc,
+            success: evaluated.success,
+            quality: evaluated.quality,
+            category: evaluated.category,
+            categoryLabel: evaluated.categoryLabel,
+            difficulty: evaluated.difficulty,
+            label: evaluated.label,
+            rolling: true,
+            isReroll,
+            luckPoints: session.luckPoints ?? 0,
+            maxLuckPoints: session.maxLuckPoints ?? 0
           });
         }
 
+        // ── 构建本回合消息：含判定注入 + 角色状态 + 局势压力 ──
+        const basePressure = calculatePressure(session.messages || []);
+        const pressure = pressureFromFailStreak(session.failStreak || 0, basePressure);
+        session.pressure = pressure;
+
+        const characterStateSummary = session.characterState
+          ? summarizeState(session.characterState, { pressureLevel: pressure.level })
+          : "";
+
+        const roundContext = buildRoundContext({
+          pressure,
+          recentRolls: (session.rollHistory || []).slice(-3),
+          characterStateSummary
+        });
+
+        const userActionMessage = { role: "user", content: action };
+        const judgeMessage = evaluated && session.characterState
+          ? { role: "system", content: formatDiceForModel(evaluated, action, damage, session.characterState) }
+          : evaluated
+            ? { role: "system", content: formatDiceForModel(evaluated, action, null, { hp: { current: 0, max: 0, temp: 0 }, corruption: { name: "腐化", current: 0, max: 100 }, conditions: [] }) }
+            : null;
+
+        const contextMessage = roundContext
+          ? { role: "system", content: `【回合动态上下文】\n${roundContext}` }
+          : null;
+
         const messages = [
           ...session.messages,
-          { role: "user", content: parsed.action },
-          { role: "system", content: formatDiceForModel(roll, parsed.action, dc) }
+          userActionMessage,
+          ...([judgeMessage, contextMessage].filter(Boolean))
         ];
 
         trace.statusWithTrace(res, "queued", "请求已发出，等待模型响应...");
@@ -307,11 +499,73 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           res
         });
 
+        // ── 更新运行时状态：掷骰历史、连续失败计数 ──
+        if (evaluated) {
+          const rollRecord = {
+            id: crypto.randomUUID().replace(/-/g, "").slice(0, 10),
+            roll: evaluated.roll,
+            dc: evaluated.dc,
+            success: evaluated.success,
+            quality: evaluated.quality,
+            category: evaluated.category,
+            categoryLabel: evaluated.categoryLabel,
+            action: action.slice(0, 80),
+            createdAt: Date.now(),
+            isReroll
+          };
+          session.rollHistory = [...(session.rollHistory || []), rollRecord].slice(-100);
+
+          if (evaluated.success) {
+            session.failStreak = 0;
+          } else {
+            session.failStreak = (session.failStreak || 0) + 1;
+          }
+        }
+
         const replyMeta = buildReplyMeta(finalReply);
-        if (dc !== null) {
-          replyMeta.check = formatDiceChip(roll, dc);
+        if (evaluated) {
+          replyMeta.check = formatDiceChip(evaluated);
+          replyMeta.roll = evaluated.roll;
+          replyMeta.modifier = evaluated.modifier;
+          replyMeta.attribute = evaluated.attribute;
+          replyMeta.attributeLabel = evaluated.attributeLabel;
+          replyMeta.attributeAbbr = evaluated.attributeAbbr;
+          replyMeta.total = evaluated.total;
+          replyMeta.dc = evaluated.dc;
+          replyMeta.success = evaluated.success;
+          replyMeta.quality = evaluated.quality;
+          replyMeta.category = evaluated.category;
+          replyMeta.categoryLabel = evaluated.categoryLabel;
+          replyMeta.label = evaluated.label;
+          replyMeta.rolling = false;
+          replyMeta.isReroll = isReroll;
+          replyMeta.consumedLuck = consumedLuck;
+          // 伤害与状态变化（前端据此更新 HP 条/腐化条）
+          if (damage) {
+            replyMeta.damage = damage;
+          }
+          if (session.characterState) {
+            replyMeta.stateAfter = {
+              hp: { ...session.characterState.hp },
+              ac: session.characterState.ac,
+              corruption: { ...session.characterState.corruption },
+              conditions: [...session.characterState.conditions]
+            };
+          }
+          // 可重投条件：失败 + 仍有运气点 + 非结局 + 角色未倒下
+          replyMeta.canReroll = !evaluated.success
+            && (session.luckPoints ?? 0) > 0
+            && !replyMeta.ended
+            && !(session.characterState?.conditions || []).includes("downed");
+        }
+        replyMeta.luckPoints = session.luckPoints ?? 0;
+        replyMeta.maxLuckPoints = session.maxLuckPoints ?? 0;
+        replyMeta.pressure = pressure;
+        if (session.characterState) {
+          replyMeta.characterState = session.characterState;
         }
         sendMeta(res, replyMeta);
+
         session.messages = sessionStore.trimMessages([...messages, { role: "assistant", content: finalReply }]);
         sessionStore.touch(session);
         sessionStore.enforceLimit();
