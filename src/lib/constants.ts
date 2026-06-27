@@ -58,5 +58,19 @@ export const DEFAULT_SETTINGS: Settings = {
     "核冬天后第12年，港口城被三股势力割据：黑潮帮、残火教团、港务委员会。城区长期停电，地下换气系统残破，地铁站成为临时集市与黑市。",
   scenarioScript:
     "今晚你收到匿名电码：'3号码头冷库有活体样本，明晨前必须转移。' 你需要在暴风雪来临前决定盟友、路线和是否公开真相。",
-  gmPrompt: DEFAULT_GM_PROMPT
+  gmPrompt: DEFAULT_GM_PROMPT,
+  initialLuckPoints: "3",
+  // D&D 5e 默认属性（全能型冒险者）
+  attrStr: "12",
+  attrDex: "14",
+  attrCon: "13",
+  attrInt: "11",
+  attrWis: "12",
+  attrCha: "10",
+  baseHp: "20",
+  baseAc: "12",
+  corruptionName: "腐化",
+  corruptionMax: "100",
+  corruptionThreshold: "70",
+  initialResources: []
 };

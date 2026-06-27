@@ -1,102 +1,91 @@
-import { useMemo, useRef, useState, useCallback, memo, useEffect } from "react";
+import { useRef, useState, useCallback, memo } from "react";
 import type { Ref } from "react";
-import { parseAssistantContent, roleLabel } from "../lib/parseHelpers";
-import type { AppStatus, Session, StreamMetaView } from "../types";
+import { DiceOverlay } from "./DiceOverlay";
+import { HistoryPanel } from "./HistoryPanel";
+import { CheckCard } from "./CheckCard";
+import { CharacterSheet } from "./CharacterSheet";
+import { StoryMessage } from "./StoryMessage";
+import type { AppStatus, RollRecord, Session, StreamMetaView } from "../types";
 
 export interface PlayViewProps {
   activeSession: Session | null;
   status: AppStatus;
   isStarting: boolean;
   isSending: boolean;
+  isRolling: boolean;
   isCurrentRoundEnded: boolean;
   quickOptions: string[];
   latestMetaView?: StreamMetaView | null;
+  /** 本回合判定卡片是否应该显示（rolling 完成后） */
+  showCheckCard: boolean;
   chatRef: Ref<HTMLDivElement>;
   onNavigate: () => void;
   onNavigateToAdmin: () => void;
   onStartAdventure: () => void;
   onSendAction: (text: string) => void;
+  onReroll: (originalRoll: number, action: string) => void;
+  onRegenerate: () => void;
 }
 
-/** Cache parseAssistantContent results by content string with LRU eviction */
-const parseCache = new Map<string, ReturnType<typeof parseAssistantContent>>();
-const MAX_CACHE_SIZE = 100;
-
-function cachedParse(content: string) {
-  let cached = parseCache.get(content);
-  if (!cached) {
-    cached = parseAssistantContent(content);
-    parseCache.set(content, cached);
-
-    // LRU eviction: remove oldest entries when cache is full
-    if (parseCache.size > MAX_CACHE_SIZE) {
-      const firstKey = parseCache.keys().next().value;
-      if (firstKey !== undefined) {
-        parseCache.delete(firstKey);
-      }
-    }
-  } else {
-    // Move to end (most recently used)
-    parseCache.delete(content);
-    parseCache.set(content, cached);
-  }
-  return cached;
-}
-
-// Global cache cleanup timer (singleton)
-let cacheCleanupTimer: ReturnType<typeof setInterval> | null = null;
-
-function startCacheCleanup() {
-  if (cacheCleanupTimer || typeof window === "undefined") return;
-  cacheCleanupTimer = setInterval(() => {
-    if (parseCache.size > MAX_CACHE_SIZE) {
-      const entriesToDelete = Array.from(parseCache.keys()).slice(0, parseCache.size - MAX_CACHE_SIZE);
-      entriesToDelete.forEach(key => parseCache.delete(key));
-    }
-  }, 60000);
-}
-
-// Start cleanup on first import
-startCacheCleanup();
+const PRESSURE_META: Record<number, { label: string; tone: string }> = {
+  0: { label: "平稳", tone: "calm" },
+  1: { label: "紧张", tone: "tense" },
+  2: { label: "危急", tone: "critical" },
+  3: { label: "绝境", tone: "dire" }
+};
 
 export const PlayView = memo(function PlayView({
   activeSession,
   status,
   isStarting,
   isSending,
+  isRolling,
   isCurrentRoundEnded,
   quickOptions,
   latestMetaView = null,
+  showCheckCard,
   chatRef,
   onNavigate,
   onNavigateToAdmin,
   onStartAdventure,
-  onSendAction
+  onSendAction,
+  onReroll,
+  onRegenerate
 }: PlayViewProps) {
   const [actionInput, setActionInput] = useState("");
+  const [inputExpanded, setInputExpanded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showSheet, setShowSheet] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // metaKey: use a counter instead of Date.now() so useMemo actually works
-  const metaCounter = useRef(0);
-  const metaKey = useMemo(() => {
-    metaCounter.current += 1;
-    return `${latestMetaView?.check || ""}_${latestMetaView?.status || ""}_${metaCounter.current}`;
-  }, [latestMetaView?.check, latestMetaView?.status]);
-
-  const hasCheck = Boolean(latestMetaView?.check);
-  const hasStatus = Boolean(latestMetaView?.status);
-  const hasMeta = hasCheck || hasStatus;
+  const canSend = Boolean(activeSession?.backendSessionId) && !isSending && !isCurrentRoundEnded && !isRolling;
   const showOptionsHint =
     Boolean(activeSession?.backendSessionId) && !isCurrentRoundEnded && quickOptions.length === 0 && !isSending;
-  const hasChoiceContent = quickOptions.length > 0 || showOptionsHint;
 
-  const canSend = Boolean(activeSession?.backendSessionId) && !isSending && !isCurrentRoundEnded;
+  const luckPoints = latestMetaView?.luckPoints ?? activeSession?.luckPoints ?? 0;
+  const maxLuckPoints = latestMetaView?.maxLuckPoints ?? activeSession?.maxLuckPoints ?? 0;
+  const pressure = latestMetaView?.pressure ?? activeSession?.pressure ?? { level: 0, hint: "局势平稳，可以谨慎推进。" };
+  const characterState = latestMetaView?.characterState ?? activeSession?.characterState ?? null;
+  const rollHistory: RollRecord[] = activeSession?.rollHistory || [];
+  const pressureMeta = PRESSURE_META[pressure.level] || PRESSURE_META[0];
+
+  // HP 概要（header 小条用）
+  const hpPct = characterState ? Math.max(0, Math.min(100, (characterState.hp.current / characterState.hp.max) * 100)) : 0;
+  const isDowned = characterState?.conditions.includes("downed");
+
+  // 可重投/重写条件
+  const canReroll = Boolean(
+    latestMetaView?.canReroll && !isSending && !isCurrentRoundEnded &&
+    typeof latestMetaView?.roll === "number" && luckPoints > 0
+  );
+  const canRegenerate = Boolean(activeSession?.backendSessionId) && !isSending && !isCurrentRoundEnded && !isRolling;
 
   const handleSubmit = useCallback(() => {
     const text = actionInput.trim();
     if (!text || !canSend) return;
     onSendAction(text);
     setActionInput("");
+    setInputExpanded(false);
     if (inputRef.current) inputRef.current.style.height = "auto";
   }, [actionInput, canSend, onSendAction]);
 
@@ -117,9 +106,49 @@ export const PlayView = memo(function PlayView({
     setActionInput(el.value);
   }, []);
 
+  const handleReroll = useCallback((originalRoll: number) => {
+    const lastRoll = rollHistory[rollHistory.length - 1];
+    onReroll(originalRoll, lastRoll?.action || "");
+  }, [rollHistory, onReroll]);
+
   return (
     <section className="play-zone">
-      {/* ── Header ── */}
+      {/* 掷骰动画浮层 */}
+      <DiceOverlay
+        active={typeof latestMetaView?.roll === "number"}
+        roll={latestMetaView?.roll}
+        modifier={latestMetaView?.modifier}
+        attributeAbbr={latestMetaView?.attributeAbbr}
+        attributeLabel={latestMetaView?.attributeLabel}
+        total={latestMetaView?.total}
+        dc={latestMetaView?.dc}
+        quality={latestMetaView?.quality}
+        isReroll={latestMetaView?.isReroll}
+      />
+
+      {/* 角色状态抽屉 */}
+      {showSheet ? (
+        <CharacterSheet
+          characterState={characterState}
+          pressure={pressure}
+          luckPoints={luckPoints}
+          maxLuckPoints={maxLuckPoints}
+          rollHistory={rollHistory}
+          onClose={() => setShowSheet(false)}
+        />
+      ) : null}
+
+      {/* 战绩面板 */}
+      {showHistory ? (
+        <HistoryPanel
+          rollHistory={rollHistory}
+          luckPoints={luckPoints}
+          maxLuckPoints={maxLuckPoints}
+          onClose={() => setShowHistory(false)}
+        />
+      ) : null}
+
+      {/* ── 极简 Header ── */}
       <header className="play-header">
         <button className="header-back" onClick={onNavigate} aria-label="返回">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
@@ -129,6 +158,32 @@ export const PlayView = memo(function PlayView({
           <span className={`header-status ${status.type}`}>{status.text}</span>
         </div>
         <div className="header-actions">
+          {/* HP 小条（极简，点击展开抽屉） */}
+          {characterState ? (
+            <button
+              className={`hp-pill ${isDowned ? "is-downed" : ""} ${hpPct < 25 ? "is-low" : ""}`}
+              onClick={() => setShowSheet(true)}
+              title={`HP ${characterState.hp.current}/${characterState.hp.max} · AC ${characterState.ac}`}
+            >
+              <span className="hp-pill-bar"><span className="hp-pill-fill" style={{ width: `${hpPct}%` }} /></span>
+              <span className="hp-pill-num">{characterState.hp.current}</span>
+            </button>
+          ) : null}
+          {/* 局势标签 */}
+          <span className={`pressure-tag pressure-tag--${pressureMeta.tone}`} title={pressure.hint}>
+            {pressureMeta.label}
+          </span>
+          {/* 运气 */}
+          <span className="luck-tag" title="运气点">♦{luckPoints}</span>
+          {/* 状态抽屉按钮 */}
+          <button className="icon-btn" onClick={() => setShowSheet(true)} title="角色状态" aria-label="角色状态">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </button>
+          {/* 战绩按钮 */}
+          <button className="icon-btn" onClick={() => setShowHistory(true)} title="战绩" aria-label="战绩">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </button>
+          {/* 设置 */}
           <button className="icon-btn" onClick={onNavigateToAdmin} title="设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
@@ -138,79 +193,56 @@ export const PlayView = memo(function PlayView({
         </div>
       </header>
 
-      {/* ── Story Stream ── */}
+      {/* ── 叙事流（占满主屏） ── */}
       <div className="story-wrap">
         <div className="story-stream" ref={chatRef}>
-          {(activeSession?.messages || []).map((msg) => {
-            const av = msg.role === "assistant" ? cachedParse(msg.content) : null;
-            return (
-              <div key={msg.id} className={`story-msg ${msg.role}`}>
-                {msg.role !== "assistant" ? (
-                  <div className="story-role">{roleLabel(msg.role)}</div>
-                ) : null}
-                <div className="story-content">
-                  {av ? av.narrative : msg.content}
-                </div>
-              </div>
-            );
-          })}
+          {(activeSession?.messages || []).map((msg) => (
+            <StoryMessage key={msg.id} id={msg.id} role={msg.role} content={msg.content} />
+          ))}
+
+          {/* 判定结果卡片（插入叙事流末尾，不占底部空间） */}
+          {showCheckCard && latestMetaView && typeof latestMetaView.roll === "number" && latestMetaView.quality ? (
+            <div className="story-msg story-msg--check">
+              <CheckCard
+                meta={latestMetaView}
+                canReroll={canReroll}
+                canRegenerate={canRegenerate}
+                busy={isSending}
+                luckPoints={luckPoints}
+                onReroll={handleReroll}
+                onRegenerate={onRegenerate}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
-      {/* ── Bottom Bar ── */}
+      {/* ── 极简底部：快捷行动 + 输入 ── */}
       <div className="play-bottom">
-        {hasMeta || hasChoiceContent ? (
-          <div className="play-bottom-layout">
-            {hasMeta ? (
-              <section className="judge-panel">
-                <div className="panel-title">判定与状态</div>
-                <div className="judge-toast" key={metaKey} aria-live="polite">
-                  {hasCheck ? (
-                    <span className="judge-chip judge-chip--check">
-                      <span className="judge-badge judge-badge--check">判定</span>
-                      <span className="judge-text">{latestMetaView!.check}</span>
-                    </span>
-                  ) : null}
-                  {hasStatus ? (
-                    <span className="judge-chip judge-chip--status">
-                      <span className="judge-badge judge-badge--status">状态</span>
-                      <span className="judge-text">{latestMetaView!.status}</span>
-                    </span>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            {hasChoiceContent ? (
-              <section className="choice-panel">
-                <div className="choice-zone">
-                  <div className="choice-title">可选行动</div>
-                  {quickOptions.length > 0 ? (
-                    <div className="choice-dock">
-                      {quickOptions.map((opt, i) => (
-                        <button
-                          key={`${opt}-${i}`}
-                          className="choice-btn"
-                          disabled={isSending}
-                          onClick={() => onSendAction(opt)}
-                        >
-                          <span className="choice-index" aria-hidden>{i + 1}</span>
-                          <span className="choice-label">{opt}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="choice-hint">等待系统给出下一步可选行动…</div>
-                  )}
-                </div>
-              </section>
-            ) : null}
+        {/* 快捷行动芯片（横向） */}
+        {!isCurrentRoundEnded && (quickOptions.length > 0 || showOptionsHint) ? (
+          <div className="quick-actions">
+            {quickOptions.length > 0 ? (
+              quickOptions.map((opt, i) => (
+                <button
+                  key={`${opt}-${i}`}
+                  className="quick-chip"
+                  disabled={isSending}
+                  onClick={() => onSendAction(opt)}
+                >
+                  <span className="quick-chip-idx">{i + 1}</span>
+                  <span className="quick-chip-text">{opt}</span>
+                </button>
+              ))
+            ) : (
+              <span className="quick-hint">等待系统给出下一步可选行动…</span>
+            )}
           </div>
         ) : null}
 
-        {/* Composer: free text input */}
+        {/* 输入框 */}
         {canSend ? (
-          <div className="composer">
+          <div className={`composer ${inputExpanded ? "is-expanded" : ""}`}>
             <textarea
               ref={inputRef}
               className="composer-input"
@@ -219,6 +251,7 @@ export const PlayView = memo(function PlayView({
               value={actionInput}
               onChange={adjustHeight}
               onKeyDown={handleKeyDown}
+              onFocus={() => setInputExpanded(true)}
               disabled={isSending}
               style={{ height: "auto", maxHeight: "200px" }}
             />
@@ -233,22 +266,10 @@ export const PlayView = memo(function PlayView({
           </div>
         ) : null}
 
-        {/* End note */}
         {isCurrentRoundEnded ? (
           <div className="end-note">冒险已结束 · 点击「重开」开始下一段故事</div>
         ) : null}
-
       </div>
     </section>
   );
 });
-
-// Cleanup on page unload
-if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => {
-    if (cacheCleanupTimer) {
-      clearInterval(cacheCleanupTimer);
-      cacheCleanupTimer = null;
-    }
-  });
-}

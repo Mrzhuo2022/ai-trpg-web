@@ -11,6 +11,32 @@ type MetaEventPayload = {
   check?: unknown;
   status?: unknown;
   ended?: unknown;
+  // 结构化判定字段
+  roll?: unknown;
+  modifier?: unknown;
+  attribute?: unknown;
+  attributeLabel?: unknown;
+  attributeAbbr?: unknown;
+  total?: unknown;
+  dc?: unknown;
+  success?: unknown;
+  quality?: unknown;
+  category?: unknown;
+  categoryLabel?: unknown;
+  difficulty?: unknown;
+  label?: unknown;
+  rolling?: unknown;
+  isReroll?: unknown;
+  consumedLuck?: unknown;
+  canReroll?: unknown;
+  regenerated?: unknown;
+  luckPoints?: unknown;
+  maxLuckPoints?: unknown;
+  pressure?: unknown;
+  // 代码化伤害与状态
+  damage?: unknown;
+  stateAfter?: unknown;
+  characterState?: unknown;
 };
 export type { StreamMetaView } from "../types";
 
@@ -28,6 +54,16 @@ function embedMetaMarker(payload: MetaEventPayload): string {
     ended: Boolean(payload.ended)
   };
   return `\n\n<GM_META>${JSON.stringify(meta)}</GM_META>`;
+}
+
+function asNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+function asBool(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
 }
 
 export interface StreamInteractionDeps {
@@ -89,10 +125,44 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
       if (event === SSE_EVENTS.meta) {
         const payload = rawPayload as MetaEventPayload;
         const ended = Boolean(payload.ended);
+        const pressureRaw = payload.pressure;
+        const pressure = pressureRaw && typeof pressureRaw === "object" && typeof (pressureRaw as { level?: unknown }).level === "number"
+          ? (pressureRaw as { level: number; hint: string })
+          : undefined;
         onMeta?.({
           check: typeof payload.check === "string" ? payload.check.trim() : "",
           status: typeof payload.status === "string" ? payload.status.trim() : "",
-          ended
+          ended,
+          roll: asNumber(payload.roll),
+          modifier: asNumber(payload.modifier),
+          attribute: asString(payload.attribute),
+          attributeLabel: asString(payload.attributeLabel),
+          attributeAbbr: asString(payload.attributeAbbr),
+          total: asNumber(payload.total),
+          dc: asNumber(payload.dc),
+          success: asBool(payload.success),
+          quality: asString(payload.quality) as StreamMetaView["quality"],
+          category: asString(payload.category),
+          categoryLabel: asString(payload.categoryLabel),
+          difficulty: asString(payload.difficulty),
+          label: asString(payload.label),
+          rolling: asBool(payload.rolling),
+          isReroll: asBool(payload.isReroll),
+          consumedLuck: asBool(payload.consumedLuck),
+          canReroll: asBool(payload.canReroll),
+          regenerated: asBool(payload.regenerated),
+          luckPoints: asNumber(payload.luckPoints),
+          maxLuckPoints: asNumber(payload.maxLuckPoints),
+          pressure,
+          damage: payload.damage && typeof payload.damage === "object"
+            ? (payload.damage as StreamMetaView["damage"])
+            : undefined,
+          stateAfter: payload.stateAfter && typeof payload.stateAfter === "object"
+            ? (payload.stateAfter as StreamMetaView["stateAfter"])
+            : undefined,
+          characterState: payload.characterState && typeof payload.characterState === "object"
+            ? (payload.characterState as StreamMetaView["characterState"])
+            : undefined
         });
 
         // Mark session as ended if the meta says so

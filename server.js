@@ -7,7 +7,8 @@ const sessionStore = createSessionStore({
   sessionTtlMs: SERVER_CONFIG.sessionTtlMs,
   maxSessions: SERVER_CONFIG.maxSessions,
   maxSessionMessages: SERVER_CONFIG.maxSessionMessages,
-  sessionSweepIntervalMs: SERVER_CONFIG.sessionSweepIntervalMs
+  sessionSweepIntervalMs: SERVER_CONFIG.sessionSweepIntervalMs,
+  initialLuckPoints: SERVER_CONFIG.initialLuckPoints
 });
 
 const diagnosticsStore = createDiagnosticsStore({

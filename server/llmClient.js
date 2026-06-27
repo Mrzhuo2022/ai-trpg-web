@@ -1,5 +1,15 @@
 import { SERVER_CONFIG } from "./config.js";
 
+/**
+ * 从 LLM 响应中提取「正文」文本。
+ *
+ * 重要：reasoning_content（思维链 / 推理过程）绝对不能当作正文输出。
+ * 许多推理模型（DeepSeek-R1、GLM、Qwen-QwQ 等）会先吐 reasoning_content，
+ * 再吐真正的 content。如果把 reasoning 当正文，玩家就会看到 GM 的内心独白，
+ * 破坏跑团沉浸感，且内容混乱。
+ *
+ * 因此这里只认 content / output_text / text 等正文字段，绝不回退到 reasoning。
+ */
 function normalizeTextValue(value) {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -13,11 +23,11 @@ function normalizeTextValue(value) {
     if (typeof value.content === "string") return value.content;
     if (typeof value.delta === "string") return value.delta;
     if (typeof value.value === "string") return value.value;
-    if (typeof value.reasoning_content === "string") return value.reasoning_content;
     if (typeof value.output_text === "string") return value.output_text;
     if (value.content) return normalizeTextValue(value.content);
     if (value.delta) return normalizeTextValue(value.delta);
     if (value.output_text) return normalizeTextValue(value.output_text);
+    // 注意：不提取 value.reasoning_content，避免思维链泄漏
   }
 
   return "";
@@ -27,7 +37,6 @@ function extractResponseText(json) {
   const message = json?.choices?.[0]?.message;
   return (
     normalizeTextValue(message?.content) ||
-    normalizeTextValue(message?.reasoning_content) ||
     normalizeTextValue(json?.choices?.[0]?.text) ||
     normalizeTextValue(json?.output_text) ||
     normalizeTextValue(json?.output?.[0]?.content) ||
@@ -35,12 +44,15 @@ function extractResponseText(json) {
   );
 }
 
+/**
+ * 从流式 SSE chunk 中提取「正文」增量。
+ * 同样绝不提取 reasoning_content（思维链）。
+ */
 function extractStreamDeltaText(json) {
   return (
     normalizeTextValue(json?.choices?.[0]?.delta?.content) ||
     normalizeTextValue(json?.choices?.[0]?.delta?.text) ||
     normalizeTextValue(json?.choices?.[0]?.delta?.output_text) ||
-    normalizeTextValue(json?.choices?.[0]?.delta?.reasoning_content) ||
     normalizeTextValue(json?.choices?.[0]?.message?.content) ||
     ""
   );

@@ -145,6 +145,71 @@ export const AdminView = memo(function AdminView({
           </label>
         </div>
 
+        <div className="row row-2">
+          <label>初始运气点
+            <input
+              type="number"
+              min={0}
+              max={20}
+              value={settings.initialLuckPoints}
+              onChange={(e) => onUpdateSetting("initialLuckPoints", String(e.target.value))}
+              placeholder="3"
+            />
+            <small className="field-hint">每局开局可用的重投点数，用于重投失败的判定（0-20）。</small>
+          </label>
+        </div>
+
+        {/* D&D 5e 角色属性 */}
+        <div className="attr-editor">
+          <div className="attr-editor-title">角色属性（D&D 5e 六维）</div>
+          <div className="attr-editor-grid">
+            {([
+              ["attrStr", "STR", "力量"],
+              ["attrDex", "DEX", "敏捷"],
+              ["attrCon", "CON", "体质"],
+              ["attrInt", "INT", "智力"],
+              ["attrWis", "WIS", "感知"],
+              ["attrCha", "CHA", "魅力"]
+            ] as const).map(([key, abbr, label]) => {
+              const val = Number(settings[key]) || 10;
+              const mod = Math.floor((val - 10) / 2);
+              return (
+                <label key={key} className="attr-edit-cell">
+                  <span className="attr-edit-abbr">{abbr}</span>
+                  <input
+                    type="number"
+                    min={3}
+                    max={20}
+                    value={settings[key]}
+                    onChange={(e) => onUpdateSetting(key, String(e.target.value))}
+                  />
+                  <span className="attr-edit-mod">{mod >= 0 ? "+" : ""}{mod}</span>
+                  <span className="attr-edit-label">{label}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="row row-3">
+            <label>基础 HP
+              <input type="number" min={1} max={999} value={settings.baseHp} onChange={(e) => onUpdateSetting("baseHp", String(e.target.value))} />
+            </label>
+            <label>护甲 AC
+              <input type="number" min={1} max={30} value={settings.baseAc} onChange={(e) => onUpdateSetting("baseAc", String(e.target.value))} />
+            </label>
+            <label>腐化条名称
+              <input value={settings.corruptionName} onChange={(e) => onUpdateSetting("corruptionName", e.target.value)} placeholder="腐化/理智/感染" />
+            </label>
+          </div>
+          <div className="row row-2">
+            <label>腐化上限
+              <input type="number" min={1} max={999} value={settings.corruptionMax} onChange={(e) => onUpdateSetting("corruptionMax", String(e.target.value))} />
+            </label>
+            <label>腐化阈值（超过触发异常）
+              <input type="number" min={1} max={999} value={settings.corruptionThreshold} onChange={(e) => onUpdateSetting("corruptionThreshold", String(e.target.value))} />
+            </label>
+          </div>
+        </div>
+
         <label>角色设定
           <textarea rows={3} value={settings.characterProfile} onChange={(e) => onUpdateSetting("characterProfile", e.target.value)} />
         </label>
