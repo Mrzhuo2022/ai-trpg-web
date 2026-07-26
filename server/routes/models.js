@@ -1,37 +1,29 @@
 import { API_ROUTES, parseModelsRequestBody } from "../../shared/contracts.js";
+import { assertSafeBaseUrl } from "../urlGuard.js";
+import { resolveLLMConfig } from "../llmConfig.js";
 
 export function registerModelsRoute(app) {
   app.post(API_ROUTES.models, async (req, res) => {
     let endpoint = "";
     try {
       const { llmConfig } = parseModelsRequestBody(req.body);
-      
-      let baseUrl = llmConfig.apiKey.startsWith("sk-")
-        ? (llmConfig.baseUrl || "https://api.openai.com/v1").trim()
-        : (llmConfig.baseUrl || "").trim();
+      const resolved = resolveLLMConfig(llmConfig);
+      await assertSafeBaseUrl(resolved.baseUrl);
 
-      if (!baseUrl && llmConfig.apiKey.startsWith("sk-")) {
-        baseUrl = "https://api.openai.com/v1";
-      }
-
-      // 自动修正 baseUrl 常见错误
-      baseUrl = baseUrl.replace(/\/+$/, "");
-      baseUrl = baseUrl.replace(/\/chat\/completions$/, "");
-      
-      endpoint = `${baseUrl}/models`;
+      endpoint = `${resolved.baseUrl}/models`;
 
       const modelRes = await fetch(endpoint, {
         method: "GET",
         headers: {
           "Accept": "application/json",
-          "Authorization": `Bearer ${llmConfig.apiKey}`
+          "Authorization": `Bearer ${resolved.apiKey}`
         },
         signal: AbortSignal.timeout(30000)
       });
 
       if (!modelRes.ok) {
-        const text = await modelRes.text();
-        throw new Error(`拉取模型列表失败 (${modelRes.status}): ${text.slice(0, 200)} (URL: ${endpoint})`);
+        // 不回显上游响应体，避免信息泄露（SSRF 回显面）
+        throw new Error(`拉取模型列表失败 (${modelRes.status})，请检查 baseUrl 与 apiKey。`);
       }
 
       const json = await modelRes.json();

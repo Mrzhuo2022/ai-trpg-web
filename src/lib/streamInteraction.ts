@@ -81,12 +81,13 @@ export interface StreamInteractionParams {
   body: Record<string, unknown>;
   successLabel: string;
   modelLabel?: string;
+  signal?: AbortSignal;
   onSession?: (backendSessionId: string) => void;
   onMeta?: (meta: StreamMetaView) => void;
 }
 
 export async function runStreamInteraction(params: StreamInteractionParams, deps: StreamInteractionDeps) {
-  const { sessionId, endpoint, body, successLabel, modelLabel, onSession, onMeta } = params;
+  const { sessionId, endpoint, body, successLabel, modelLabel, signal, onSession, onMeta } = params;
   const { addMessage, appendToMessage, persistSessionsNow, setStatus, stopWaitingTicker, markSessionEnded } = deps;
   const messageId = addMessage(sessionId, "assistant", "");
 
@@ -181,11 +182,14 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
         const traceText = payload.traceId ? `（trace: ${payload.traceId}）` : "";
         throw new Error(`${String(payload.message || "请求失败")}${traceText}`);
       }
-    });
+    }, { signal });
     persistSessionsNow();
     return { ok: true as const };
   } catch (error) {
     persistSessionsNow();
+    if ((error as Error)?.name === "AbortError" || signal?.aborted) {
+      return { ok: false as const, aborted: true as const, error: "请求已取消。" };
+    }
     return { ok: false as const, error: String((error as Error).message || error) };
   }
 }

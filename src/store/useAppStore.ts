@@ -285,15 +285,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!trimmed) return { ok: false, message: "请输入预设名称。" };
 
     try {
-      const presets = [...get().presets];
-      const existing = presets.find((p) => p.name === trimmed);
-
-      if (existing) {
-        existing.data = data;
-        existing.updatedAt = Date.now();
-      } else {
-        presets.unshift({ id: uid(), name: trimmed, updatedAt: Date.now(), data });
-      }
+      const existing = get().presets.find((p) => p.name === trimmed);
+      // 不可变更新：避免原地修改旧对象导致 React 引用比较失效
+      const presets = existing
+        ? get().presets.map((p) => (p.name === trimmed ? { ...p, data, updatedAt: Date.now() } : p))
+        : [{ id: uid(), name: trimmed, updatedAt: Date.now(), data }, ...get().presets];
 
       savePresets(presets);
       set({ presets });

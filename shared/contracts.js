@@ -40,10 +40,32 @@ function requiredTrimmedStringSchema(fieldLabel) {
   );
 }
 
+const MAX_SHORT_FIELD = 200;
+const MAX_LONG_FIELD = 60000;
+const MAX_ACTION_LENGTH = 4000;
+
+function optionalBoundedStringSchema(max) {
+  return z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() : ""),
+    z.string().max(max, `字段长度不能超过 ${max} 字符。`)
+  );
+}
+
+// baseUrl 可为空（服务端可通过 LLM_BASE_URL 环境变量提供）；非空时自动补全协议
+const optionalBaseUrlSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return "";
+  let val = value.trim();
+  if (val && !/^https?:\/\//i.test(val)) {
+    val = `https://${val}`;
+  }
+  return val;
+}, z.string());
+
 const modelsRequestSchema = z.object({
   llmConfig: z.object({
-    baseUrl: requiredTrimmedStringSchema("baseUrl"),
-    apiKey: requiredTrimmedStringSchema("apiKey")
+    // baseUrl / apiKey 均可为空：服务端可通过 LLM_BASE_URL / LLM_API_KEY 环境变量提供
+    baseUrl: optionalBaseUrlSchema,
+    apiKey: optionalTrimmedStringSchema
   })
 });
 
@@ -58,18 +80,19 @@ const optionalNumberStringSchema = z.preprocess(
 
 const startRequestSchema = z.object({
   llmConfig: z.object({
-    baseUrl: requiredTrimmedStringSchema("baseUrl"),
-    apiKey: requiredTrimmedStringSchema("apiKey"),
-    model: requiredTrimmedStringSchema("model")
+    // baseUrl / apiKey 均可为空：服务端可通过 LLM_BASE_URL / LLM_API_KEY 环境变量提供
+    baseUrl: optionalBaseUrlSchema,
+    apiKey: optionalTrimmedStringSchema,
+    model: optionalTrimmedStringSchema
   }),
-  gmPrompt: optionalTrimmedStringSchema,
-  ruleset: optionalTrimmedStringSchema,
-  worldName: optionalTrimmedStringSchema,
-  worldbook: optionalTrimmedStringSchema,
-  scenarioScript: optionalTrimmedStringSchema,
-  characterName: optionalTrimmedStringSchema,
-  characterProfile: optionalTrimmedStringSchema,
-  worldSeed: optionalTrimmedStringSchema,
+  gmPrompt: optionalBoundedStringSchema(MAX_LONG_FIELD),
+  ruleset: optionalBoundedStringSchema(MAX_LONG_FIELD),
+  worldName: optionalBoundedStringSchema(MAX_SHORT_FIELD),
+  worldbook: optionalBoundedStringSchema(MAX_LONG_FIELD),
+  scenarioScript: optionalBoundedStringSchema(MAX_LONG_FIELD),
+  characterName: optionalBoundedStringSchema(MAX_SHORT_FIELD),
+  characterProfile: optionalBoundedStringSchema(MAX_LONG_FIELD),
+  worldSeed: optionalBoundedStringSchema(MAX_LONG_FIELD),
   // 角色属性（D&D 5e 六维），字符串形式存数字
   attrStr: optionalNumberStringSchema,
   attrDex: optionalNumberStringSchema,
@@ -88,7 +111,7 @@ const startRequestSchema = z.object({
 
 const actRequestSchema = z.object({
   sessionId: optionalTrimmedStringSchema,
-  action: optionalTrimmedStringSchema,
+  action: optionalBoundedStringSchema(MAX_ACTION_LENGTH),
   // 玩家请求重投上一次失败的判定（消耗 1 点运气）
   reroll: z.preprocess((value) => value === true || value === "true", z.boolean()).optional(),
   // 玩家请求重新生成上一回合叙事（不改骰子，不消耗运气）

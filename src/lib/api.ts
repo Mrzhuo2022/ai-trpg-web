@@ -83,10 +83,11 @@ export async function streamPost(
   url: string,
   body: unknown,
   onEvent: StreamEventHandler,
-  options?: { retries?: number; retryDelay?: number }
+  options?: { retries?: number; retryDelay?: number; signal?: AbortSignal }
 ) {
   const retries = options?.retries ?? 2;
   const retryDelay = options?.retryDelay ?? 1000;
+  const signal = options?.signal;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -95,13 +96,22 @@ export async function streamPost(
       const delay = Math.min(retryDelay * Math.pow(2, attempt - 1), 5000);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
+    if (signal?.aborted) {
+      const abortError = new Error("请求已取消。");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
 
     try {
-      return await streamPostAttempt(url, body, onEvent);
+      return await streamPostAttempt(url, body, onEvent, signal);
     } catch (err) {
       lastError = err as Error;
       const error = err as StreamError;
 
+      // Don't retry on user cancellation
+      if (error.name === "AbortError" || signal?.aborted) {
+        throw error;
+      }
       // Don't retry if it's a client error (4xx)
       if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
         throw error;
@@ -113,13 +123,14 @@ export async function streamPost(
   throw lastError;
 }
 
-async function streamPostAttempt(url: string, body: unknown, onEvent: StreamEventHandler) {
+async function streamPostAttempt(url: string, body: unknown, onEvent: StreamEventHandler, signal?: AbortSignal) {
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
   } catch (err) {
     const error = err as Error;

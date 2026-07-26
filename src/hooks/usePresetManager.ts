@@ -134,6 +134,11 @@ export function usePresetManager() {
     if (!target) return;
     if (!window.confirm(`确认删除预设「${target.name}」？此操作不可撤销。`)) return;
     const result = deletePresetById(presetId);
+    if (result.ok) {
+      // 复位选中项，让自动选择 effect 挑选下一个可用预设，避免悬空 id
+      setPresetId("");
+      setPresetName("");
+    }
     setStatus(result.message, result.ok ? "ok" : "error");
   };
 

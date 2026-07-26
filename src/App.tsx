@@ -193,11 +193,7 @@ export default function App() {
     if (!activeSession) return;
     if (activeSession.messages.length > 0 && !window.confirm("确认重开？当前进度将被清空。")) return;
     const runtimeSettings = useAppStore.getState().settings;
-    // 防御：apiKey/baseUrl/model 任一缺失都给出明确提示，避免静默失败让用户以为“重开没反应”
-    if (!runtimeSettings.model.trim() || !runtimeSettings.baseUrl.trim() || !runtimeSettings.apiKey.trim()) {
-      storeActions.setStatus("重开失败：未配置 baseUrl / apiKey / model，请到设置页补全。", "error");
-      return;
-    }
+    // baseUrl/apiKey/model 均可为空：服务端可通过环境变量提供；缺失时服务端会返回明确错误
     await startAdventureForSession(activeSession.localId, runtimeSettings);
   }, [activeSession, startAdventureForSession, storeActions]);
 

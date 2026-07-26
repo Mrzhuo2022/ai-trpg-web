@@ -33,6 +33,29 @@ export function useAdventure() {
   const waitingTimerRef = useRef<number | null>(null);
   const waitingStartedRef = useRef(0);
 
+  /** 当前进行中的流式请求控制器；新请求开始或组件卸载时取消旧请求 */
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  const abortActiveStream = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+  }, []);
+
+  const beginStreamAbortController = useCallback(() => {
+    abortActiveStream();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    return controller;
+  }, [abortActiveStream]);
+
+  useEffect(() => {
+    return () => {
+      abortActiveStream();
+    };
+  }, [abortActiveStream]);
+
   const stopWaitingTicker = useCallback(() => {
     if (waitingTimerRef.current) {
       window.clearInterval(waitingTimerRef.current);
@@ -62,6 +85,7 @@ export function useAdventure() {
       body: Record<string, unknown>;
       successLabel: string;
       modelLabel?: string;
+      signal?: AbortSignal;
       onSession?: (backendSessionId: string) => void;
       onMeta?: (meta: StreamMetaView) => void;
     }) =>
@@ -153,11 +177,10 @@ export function useAdventure() {
 
   const startAdventureForSession = useCallback(
     async (sessionId: string, runtimeSettings: Settings, forcedTitle?: string) => {
-      const modelName = runtimeSettings.model.trim();
-      if (!modelName || !runtimeSettings.baseUrl.trim() || !runtimeSettings.apiKey.trim()) {
-        storeActions.current.setStatus("该剧本未配置可用模型服务，请联系管理员预设 API。", "error");
-        return;
-      }
+      // baseUrl/apiKey/model 均可为空：服务端可通过 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+      // 环境变量提供；缺失时由服务端返回明确错误提示
+      const model = runtimeSettings.model.trim();
+      const modelName = model || "服务端默认";
 
       setLiveMeta(null);
       setIsRolling(false);
@@ -171,14 +194,16 @@ export function useAdventure() {
       startWaitingTicker();
 
       let nextBackendSessionId = "";
+      const controller = beginStreamAbortController();
       const result = await executeStreamInteraction({
         sessionId,
+        signal: controller.signal,
         endpoint: API_ROUTES.gameStartStream,
         body: {
           llmConfig: {
             baseUrl: runtimeSettings.baseUrl,
             apiKey: runtimeSettings.apiKey,
-            model: modelName
+            model
           },
           gmPrompt: runtimeSettings.gmPrompt,
           ruleset: runtimeSettings.ruleset,
@@ -209,8 +234,14 @@ export function useAdventure() {
         onMeta: (meta) => handleMeta(sessionId, meta)
       });
 
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+
       if (result.ok) {
         storeActions.current.setSessionBackendId(sessionId, nextBackendSessionId);
+      } else if ("aborted" in result && result.aborted) {
+        storeActions.current.setStatus("开场已取消。", "idle");
       } else {
         storeActions.current.addMessage(sessionId, "error", result.error);
         storeActions.current.setStatus(`模型请求失败（${modelName}）：${result.error}`, "error");
@@ -219,7 +250,7 @@ export function useAdventure() {
       stopWaitingTicker();
       setIsStarting(false);
     },
-    [startWaitingTicker, executeStreamInteraction, stopWaitingTicker, handleMeta]
+    [startWaitingTicker, executeStreamInteraction, stopWaitingTicker, handleMeta, beginStreamAbortController]
   );
 
   const sendActionText = useCallback(
@@ -271,27 +302,35 @@ export function useAdventure() {
         delete body.action;
       }
 
+      const controller = beginStreamAbortController();
       const result = await executeStreamInteraction({
         sessionId,
+        signal: controller.signal,
         endpoint: API_ROUTES.gameActStream,
         body,
         successLabel: followUp?.type === "reroll" ? "重投完成" : followUp?.type === "regenerate" ? "重写完成" : "模型请求成功",
         onMeta: (meta) => handleMeta(sessionId, meta)
       });
 
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+
       stopWaitingTicker();
       setIsSending(false);
       // 兜底：请求结束后强制复位掷骰动画，防止 rolling 状态卡住导致界面被遮罩锁死
       setIsRolling(false);
 
-      if (!result.ok && followUp) {
+      if (!result.ok && "aborted" in result && result.aborted) {
+        storeActions.current.setStatus("请求已取消。", "idle");
+      } else if (!result.ok && followUp) {
         storeActions.current.setStatus(`${followUp.type === "reroll" ? "重投" : "重写"}失败：${result.error}`, "error");
       } else if (!result.ok) {
         // 普通行动失败也要复位并提示，避免用户以为“没反应”
         storeActions.current.setStatus(`行动失败：${result.error}`, "error");
       }
     },
-    [startWaitingTicker, executeStreamInteraction, stopWaitingTicker, handleMeta]
+    [startWaitingTicker, executeStreamInteraction, stopWaitingTicker, handleMeta, beginStreamAbortController]
   );
 
   return {

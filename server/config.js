@@ -6,8 +6,12 @@ export function envPositiveInt(name, fallback) {
 }
 
 export const SERVER_CONFIG = Object.freeze({
-  port: process.env.PORT || 3157,
+  port: envPositiveInt("PORT", 3157),
   host: (process.env.HOST || "127.0.0.1").trim() || "127.0.0.1",
+  // Server-side credentials: when set, clients no longer need to submit an apiKey.
+  llmApiKey: (process.env.LLM_API_KEY || "").trim(),
+  llmBaseUrl: (process.env.LLM_BASE_URL || "").trim(),
+  llmModel: (process.env.LLM_MODEL || "").trim(),
   sessionTtlMs: Math.max(5 * 60 * 1000, envPositiveInt("SESSION_TTL_MS", 6 * 60 * 60 * 1000)),
   maxSessions: Math.max(10, envPositiveInt("MAX_SESSIONS", 200)),
   sessionSweepIntervalMs: Math.max(10 * 1000, envPositiveInt("SESSION_SWEEP_INTERVAL_MS", 60 * 1000)),

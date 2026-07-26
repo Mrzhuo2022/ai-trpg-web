@@ -58,7 +58,7 @@ function extractStreamDeltaText(json) {
   );
 }
 
-export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus, onToken }) {
+export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus, onToken, signal }) {
   let normalizedBaseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
   normalizedBaseUrl = normalizedBaseUrl.replace(/\/chat\/completions$/, "");
   
@@ -71,6 +71,16 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
   const controller = new AbortController();
   const timeoutMs = 120000;
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  // 外部取消（如客户端断开连接）：中止上游 LLM 请求，避免白烧 token
+  let abortedByCaller = false;
+  const onExternalAbort = () => {
+    abortedByCaller = true;
+    controller.abort();
+  };
+  if (signal) {
+    if (signal.aborted) onExternalAbort();
+    else signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
 
   onStatus?.("request_sent");
 
@@ -117,15 +127,9 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
     );
   };
 
-  let res;
   try {
-    res = await fetchWithRetry(true, 1);
-  } catch (err) {
-    clearTimeout(timeoutId);
-    throw err;
-  }
+    let res = await fetchWithRetry(true, 1);
 
-  try {
     if (!res.ok) {
       const streamErrText = await res.text();
 
@@ -197,7 +201,7 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
         }
 
         const finishReason = json?.choices?.[0]?.finish_reason;
-        if (finishReason && finishReason !== "stop") {
+        if (finishReason) {
           onStatus?.("completed", Date.now() - startedAt);
         }
       } catch {
@@ -249,11 +253,17 @@ export async function callLLMStream({ baseUrl, apiKey, model, messages, onStatus
     onStatus?.("completed", Date.now() - startedAt);
     return fullContent;
   } catch (error) {
-    if (error?.name === "AbortError") {
+    if (error?.name === "AbortError" || controller.signal.aborted) {
+      if (abortedByCaller) {
+        const abortErr = new Error("客户端已断开，LLM 请求已中止。");
+        abortErr.name = "ClientAbortError";
+        throw abortErr;
+      }
       throw new Error(`LLM 请求超时（${timeoutMs / 1000}s），请检查网络连接或模型服务状态。`);
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", onExternalAbort);
   }
 }

@@ -14,6 +14,8 @@ import {
 import { rollD20, formatDiceForModel, formatDiceChip, calculateDC, evaluateCheckWithAction, applyCheckConsequences, calculatePressure, pressureFromFailStreak } from "../judgeEngine.js";
 import { createCharacterState, summarizeState } from "../characterState.js";
 import { initSSE, sendDone, sendError, sendMeta, sendSession, sendStatus, sendToken } from "../sse.js";
+import { assertSafeBaseUrl } from "../urlGuard.js";
+import { resolveLLMConfig } from "../llmConfig.js";
 
 function makeTraceId() {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -77,10 +79,11 @@ function sendSSEErrorAndDone(res, payload) {
   res.end();
 }
 
-async function streamPrimaryReply({ llmConfig, messages, trace, res }) {
+async function streamPrimaryReply({ llmConfig, messages, trace, res, signal }) {
   return callLLMStream({
     ...llmConfig,
     messages,
+    signal,
     onStatus: (phase, elapsedMs) => {
       trace.statusWithTrace(res, phase, buildStatusText(phase), elapsedMs);
     },
@@ -118,7 +121,7 @@ async function applyReplyRepairs({ llmConfig, messages, baseReply, trace, res })
  * 从 session.messages 末尾移除最后一条 assistant 回复，
  * 用相同的 user+system 上下文重新调一次 LLM。
  */
-async function regenerateLastReply({ session, trace, res }) {
+async function regenerateLastReply({ session, sessionStore, trace, res, signal }) {
   const messages = Array.isArray(session.messages) ? session.messages : [];
   if (messages.length < 2) return false;
 
@@ -145,7 +148,8 @@ async function regenerateLastReply({ session, trace, res }) {
     llmConfig: session.llmConfig,
     messages: llmMessages,
     trace,
-    res
+    res,
+    signal
   });
   const finalReply = await applyReplyRepairs({
     llmConfig: session.llmConfig,
@@ -180,9 +184,15 @@ async function runGameRequestHandler(req, res, { routeLabel, diagnosticsStore, h
 
   let diagInfo = { model: "", baseUrl: "" };
 
+  // 客户端断开连接时中止上游 LLM 请求
+  const abortController = new AbortController();
+  const onClose = () => abortController.abort();
+  res.on("close", onClose);
+
   try {
     await handler({
       trace,
+      signal: abortController.signal,
       setDiagInfo: (info) => {
         diagInfo = { ...diagInfo, ...info };
       }
@@ -192,15 +202,22 @@ async function runGameRequestHandler(req, res, { routeLabel, diagnosticsStore, h
     if (error?.name === "ZodError" && Array.isArray(error.errors)) {
       message = `参数验证失败: ${error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ")}`;
     }
-    console.error(`[Game API Error] ${routeLabel}:`, error);
+    const isClientAbort = error?.name === "ClientAbortError";
+    if (!isClientAbort) {
+      console.error(`[Game API Error] ${routeLabel}:`, error);
+    }
     trace.record({
-      status: "error",
+      status: isClientAbort ? "aborted" : "error",
       phase: "error",
       elapsedMs: trace.elapsedMs(),
       ...diagInfo,
       message
     });
-    sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
+    if (!isClientAbort) {
+      sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
+    }
+  } finally {
+    res.off("close", onClose);
   }
 }
 
@@ -209,11 +226,12 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
     await runGameRequestHandler(req, res, {
       routeLabel: API_ROUTES.gameStartStream,
       diagnosticsStore,
-      handler: async ({ trace, setDiagInfo }) => {
+      handler: async ({ trace, signal, setDiagInfo }) => {
         const parsed = parseStartRequestBody(req.body);
-        const cfg = parsed.llmConfig;
+        const cfg = resolveLLMConfig(parsed.llmConfig, { requireModel: true });
         const diagInfo = { model: cfg.model, baseUrl: cfg.baseUrl };
         setDiagInfo(diagInfo);
+        await assertSafeBaseUrl(cfg.baseUrl);
 
         const mergedWorldbook = (parsed.worldbook || parsed.worldSeed || "").trim();
         const systemPrompt = makeSystemPrompt({
@@ -260,7 +278,8 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           llmConfig: cfg,
           messages,
           trace,
-          res
+          res,
+          signal
         });
         const finalReply = await applyReplyRepairs({
           llmConfig: cfg,
@@ -303,10 +322,15 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
   });
 
   app.post(API_ROUTES.gameActStream, async (req, res) => {
+    let lockedSession = null;
+    const markLocked = (session) => {
+      lockedSession = session;
+    };
+    try {
     await runGameRequestHandler(req, res, {
       routeLabel: API_ROUTES.gameActStream,
       diagnosticsStore,
-      handler: async ({ trace, setDiagInfo }) => {
+      handler: async ({ trace, signal, setDiagInfo }) => {
         const parsed = parseActRequestBody(req.body);
 
         if (!parsed.sessionId) {
@@ -351,11 +375,20 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           return sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
         }
 
+        // 并发互斥：同一 session 同时只允许一个进行中的行动
+        if (session.busy) {
+          const message = "上一个行动仍在处理中，请等待其完成。";
+          trace.record({ status: "error", phase: "session_busy", ...diagInfo, message });
+          return sendSSEErrorAndDone(res, { message, traceId: trace.traceId });
+        }
+        session.busy = true;
+        markLocked(session);
+
         sessionStore.touch(session);
 
         // ── 重生成分支：不改骰子、不消耗运气，仅重新生成上一回合叙事 ──
         if (parsed.regenerate) {
-          const regenerated = await regenerateLastReply({ session, trace, res });
+          const regenerated = await regenerateLastReply({ session, sessionStore, trace, res, signal });
           if (!regenerated) {
             return sendSSEErrorAndDone(res, { message: "没有可重写的上一回合。", traceId: trace.traceId });
           }
@@ -489,7 +522,8 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           llmConfig: session.llmConfig,
           messages,
           trace,
-          res
+          res,
+          signal
         });
         const finalReply = await applyReplyRepairs({
           llmConfig: session.llmConfig,
@@ -584,5 +618,8 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
         res.end();
       }
     });
+    } finally {
+      if (lockedSession) lockedSession.busy = false;
+    }
   });
 }
