@@ -7,7 +7,6 @@ import {
   isEndingReply
 } from "../meta.js";
 import {
-  buildOptionFixPrompt,
   buildRoundContext,
   makeSystemPrompt
 } from "../prompts.js";
@@ -431,8 +430,10 @@ export function registerGameRoutes(app, { sessionStore, diagnosticsStore }) {
           consumedLuck = true;
           session.luckPoints -= 1;
 
-          // 重投：保留两次中更好的结果
-          const originalRoll = Number.isFinite(parsed.originalRoll) ? parsed.originalRoll : null;
+          // 重投：保留两次中更好的结果。
+          // 原骰值从服务端掷骰历史自取，不信任客户端上报（防谎报 20 作弊）
+          const lastRecord = (session.rollHistory || [])[session.rollHistory?.length - 1] || null;
+          const originalRoll = Number.isFinite(lastRecord?.roll) ? lastRecord.roll : null;
           const newRoll = rollD20();
           if (originalRoll !== null && originalRoll >= newRoll) {
             roll = originalRoll; // 旧骰更好，保留旧结果（但仍消耗运气，叙事可换）

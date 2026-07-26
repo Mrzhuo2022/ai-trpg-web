@@ -48,6 +48,8 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
    * - 当被裁掉的早期消息较多时，从它们中抽取关键事实（NPC、物品、转折），
    *   追加到 system 末尾，避免长会话丢失世界观与伏笔
    */
+  const SUMMARY_HEADER = "【剧情纲要（自动抽取）】";
+
   function trimMessages(messages) {
     if (!Array.isArray(messages) || messages.length <= maxSessionMessages) return messages;
 
@@ -57,10 +59,19 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
     const kept = rest.slice(-keepCount);
 
     const summary = summarizeDropped(dropped);
-    const newSystem = summary
-      ? { ...systemMessage, content: `${systemMessage.content}\n\n【剧情纲要（自动抽取）】\n${summary}` }
-      : systemMessage;
+    if (!summary) return [systemMessage, ...kept];
 
+    // 替换而非追加：把旧纲要段落剥离后与新纲要合并去重，
+    // 避免长会话反复裁剪导致 system 消息无限膨胀
+    const content = String(systemMessage.content || "");
+    const headerIdx = content.indexOf(`\n\n${SUMMARY_HEADER}`);
+    const baseContent = headerIdx === -1 ? content : content.slice(0, headerIdx);
+    const oldSummary = headerIdx === -1 ? "" : content.slice(headerIdx).replace(`\n\n${SUMMARY_HEADER}\n`, "").trim();
+    const mergedFacts = Array.from(new Set([...oldSummary.split("；"), ...summary.split("；")].map((s) => s.trim()).filter(Boolean)));
+    // 上限保护：最多保留 12 条事实
+    const finalSummary = mergedFacts.slice(-12).join("；");
+
+    const newSystem = { ...systemMessage, content: `${baseContent}\n\n${SUMMARY_HEADER}\n${finalSummary}` };
     return [newSystem, ...kept];
   }
 
@@ -74,11 +85,22 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
 
     const facts = [];
 
-    // NPC 提取（常见命名模式：名字+职业/称谓）
-    const npcMatches = text.match(/(?:老烟枪|大祭司|零|伊芙|维克多|[林程谢苏鲁唐]野|谢宁|唐墨|苏禾|鲁川|林岚)/g);
-    if (npcMatches) {
-      const unique = Array.from(new Set(npcMatches)).slice(0, 6);
-      facts.push(`已遇 NPC：${unique.join("、")}`);
+    // NPC 提取（通用模式，不依赖具体剧本）：
+    // ①「引号内的短名」 ② X说/道/喊（2-4 字中文名+说话动词） ③ 名叫/自称 X
+    const npcCandidates = [];
+    for (const m of text.matchAll(/[「『"]([\u4e00-\u9fa5·]{2,6})[」』"]/g)) npcCandidates.push(m[1]);
+    for (const m of text.matchAll(/([\u4e00-\u9fa5·]{2,4})(?:说道|说|喊道|低声道|答道|回道)[:：]/g)) npcCandidates.push(m[1]);
+    for (const m of text.matchAll(/(?:名叫|自称|叫做)\s*([\u4e00-\u9fa5·]{2,6})/g)) npcCandidates.push(m[1]);
+    if (npcCandidates.length) {
+      // 至少出现 2 次的才算稳定 NPC，降低误报
+      const counts = new Map();
+      for (const name of npcCandidates) counts.set(name, (counts.get(name) || 0) + 1);
+      const unique = Array.from(counts.entries())
+        .filter(([, n]) => n >= 2)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([name]) => name);
+      if (unique.length) facts.push(`已遇 NPC：${unique.join("、")}`);
     }
 
     // 物品/资源提取
@@ -105,15 +127,6 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
     if (/获得|入手|拿到|找到了/.test(text)) facts.push("获得了关键物品或情报");
 
     return facts.length ? facts.join("；") : "";
-  }
-
-  function resetRuntimeState(session) {
-    if (!session) return;
-    session.luckPoints = safeInitialLuck;
-    session.maxLuckPoints = safeInitialLuck;
-    session.rollHistory = [];
-    session.pressure = { level: 0, hint: "局势平稳，可以谨慎推进。" };
-    session.failStreak = 0;
   }
 
   function create({ sessionId, llmConfig, systemPrompt, initialUserMessage, finalReply, characterState }) {
@@ -159,7 +172,6 @@ export function createSessionStore({ sessionTtlMs, maxSessions, maxSessionMessag
     remove,
     touch,
     trimMessages,
-    resetRuntimeState,
     cleanupExpired,
     enforceLimit,
     isExpired,

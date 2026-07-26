@@ -69,6 +69,7 @@ function asString(v: unknown): string | undefined {
 export interface StreamInteractionDeps {
   addMessage: (sessionId: string, role: "assistant", content: string) => string;
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  removeMessage: (sessionId: string, messageId: string) => void;
   persistSessionsNow: () => void;
   setStatus: (text: string, type?: "idle" | "pending" | "ok" | "error") => void;
   stopWaitingTicker: () => void;
@@ -88,8 +89,9 @@ export interface StreamInteractionParams {
 
 export async function runStreamInteraction(params: StreamInteractionParams, deps: StreamInteractionDeps) {
   const { sessionId, endpoint, body, successLabel, modelLabel, signal, onSession, onMeta } = params;
-  const { addMessage, appendToMessage, persistSessionsNow, setStatus, stopWaitingTicker, markSessionEnded } = deps;
+  const { addMessage, appendToMessage, removeMessage, persistSessionsNow, setStatus, stopWaitingTicker, markSessionEnded } = deps;
   const messageId = addMessage(sessionId, "assistant", "");
+  let receivedContent = false;
 
   try {
     await streamPost(endpoint, body, (event, rawPayload) => {
@@ -112,6 +114,7 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
       if (event === SSE_EVENTS.token) {
         const payload = rawPayload as TokenEventPayload;
         const token = String(payload.token || "");
+        if (token) receivedContent = true;
         // Direct append - no character queue for simplicity and correctness
         appendToMessage(sessionId, messageId, token);
         return;
@@ -186,6 +189,10 @@ export async function runStreamInteraction(params: StreamInteractionParams, deps
     persistSessionsNow();
     return { ok: true as const };
   } catch (error) {
+    // 失败且无任何内容时移除空 assistant 气泡，避免留下空消息
+    if (!receivedContent) {
+      removeMessage(sessionId, messageId);
+    }
     persistSessionsNow();
     if ((error as Error)?.name === "AbortError" || signal?.aborted) {
       return { ok: false as const, aborted: true as const, error: "请求已取消。" };

@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import { API_ROUTES } from "../shared/contracts.js";
+import { SERVER_CONFIG } from "./config.js";
+import { createRateLimiter } from "./rateLimit.js";
 import { registerDiagnosticsRoute } from "./routes/diagnostics.js";
 import { registerGameRoutes } from "./routes/game.js";
 import { registerModelsRoute } from "./routes/models.js";
@@ -13,6 +15,11 @@ const STATIC_DIR = path.resolve(__dirname, "..", "dist");
 export function createApp({ sessionStore, diagnosticsStore }) {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
+
+  // 限流：LLM 相关接口每 IP 每分钟最多 N 次（消耗上游配额，需防滥用）
+  const rateLimit = createRateLimiter({ maxPerMinute: SERVER_CONFIG.rateLimitPerMinute });
+  app.use("/api/game", rateLimit);
+  app.use("/api/models", rateLimit);
 
   registerModelsRoute(app);
   registerDiagnosticsRoute(app, diagnosticsStore);

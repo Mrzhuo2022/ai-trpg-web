@@ -36,6 +36,8 @@ export default function App() {
     isRolling,
     liveMeta,
     setLiveMeta,
+    lastFailedAction,
+    cancelStream,
     startAdventureForSession,
     sendActionText
   } = useAdventure();
@@ -189,6 +191,14 @@ export default function App() {
     return () => el.removeEventListener("scroll", handleChatScroll);
   }, [handleChatScroll, view, activeSessionId]);
 
+  // 稳定引用的导航回调：内联箭头函数会击穿 memo(PlayView/ShelfView)
+  const handleNavigateLibrary = useCallback(() => navigate("library"), [navigate]);
+  const handleNavigateAdmin = useCallback(() => navigate("admin"), [navigate]);
+  const handleCancelCareerPicker = useCallback(() => {
+    setCareerPickerPresetId("");
+    setSelectedCareerName("");
+  }, []);
+
   const handleStartAdventure = useCallback(async () => {
     if (!activeSession) return;
     if (activeSession.messages.length > 0 && !window.confirm("确认重开？当前进度将被清空。")) return;
@@ -207,15 +217,15 @@ export default function App() {
     );
   }, [activeSession, sendActionText, isCurrentRoundEnded]);
 
-  // 重投：消耗 1 点运气，重新掷骰判定同一行动
-  const handleReroll = useCallback(async (originalRoll: number, action: string) => {
+  // 重投：消耗 1 点运气，重新掷骰判定同一行动（原骰值由服务端自取）
+  const handleReroll = useCallback(async (action: string) => {
     if (!activeSession) return;
     await sendActionText(
       activeSession.localId,
       activeSession.backendSessionId,
       action || "重投上一回合的行动",
       isCurrentRoundEnded,
-      { type: "reroll", originalRoll }
+      { type: "reroll" }
     );
   }, [activeSession, sendActionText, isCurrentRoundEnded]);
 
@@ -314,7 +324,7 @@ export default function App() {
         isLoadingModels={pm.isLoadingModels}
         fileInputRef={pm.fileInputRef}
         onUpdateSetting={pm.updateSetting}
-        onNavigate={() => navigate("library")}
+        onNavigate={handleNavigateLibrary}
         onSetPresetName={pm.setPresetName}
         onSetPresetId={pm.setPresetId}
         onLoadModels={() => void pm.handleLoadModels()}
@@ -342,12 +352,9 @@ export default function App() {
           onStartFromShelf={handleStartFromShelf}
           onOpenCareerPicker={openCareerPickerForPreset}
           onSetSelectedCareerName={setSelectedCareerName}
-          onCancelCareerPicker={() => {
-            setCareerPickerPresetId("");
-            setSelectedCareerName("");
-          }}
+          onCancelCareerPicker={handleCancelCareerPicker}
           onConfirmCareerAndStart={handleConfirmCareerAndStart}
-          onNavigateToAdmin={() => navigate("admin")}
+          onNavigateToAdmin={handleNavigateAdmin}
         />
       ) : (
         <PlayView
@@ -368,12 +375,14 @@ export default function App() {
             )
           }
           chatRef={chatRef}
-          onNavigate={() => navigate("library")}
-          onNavigateToAdmin={() => navigate("admin")}
+          lastFailedAction={lastFailedAction}
+          onNavigate={handleNavigateLibrary}
+          onNavigateToAdmin={handleNavigateAdmin}
           onStartAdventure={handleStartAdventure}
           onSendAction={handleSendAction}
           onReroll={handleReroll}
           onRegenerate={handleRegenerate}
+          onCancelStream={cancelStream}
         />
       )}
     </main>

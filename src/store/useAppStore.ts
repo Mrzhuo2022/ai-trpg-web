@@ -8,6 +8,7 @@ import {
   saveActiveSessionId,
   savePresets,
   saveSessions,
+  saveSessionsDebounced,
   saveSettings
 } from "../lib/storage";
 import { uid } from "../lib/utils";
@@ -35,10 +36,11 @@ interface AppState {
   /** 同步某会话的运行时状态（运气点、掷骰历史、压力、角色状态）—— 由 useAdventure 在收到 meta 后调用 */
   syncSessionRuntime: (id: string, patch: Partial<Pick<Session, "luckPoints" | "maxLuckPoints" | "rollHistory" | "pressure" | "characterState">>) => void;
   addRollRecord: (id: string, record: RollRecord) => void;
-  spendLuck: (id: string, amount?: number) => void;
 
   addMessage: (sessionId: string, role: ChatRole, content: string) => string;
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  /** 删除指定消息（用于清理失败请求留下的空 assistant 气泡） */
+  removeMessage: (sessionId: string, messageId: string) => void;
   /** 替换最后一条 assistant 消息（用于重生成/重投） */
   replaceLastAssistantMessage: (sessionId: string, content: string) => void;
 
@@ -112,7 +114,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       nextActive = sessions[0].localId;
     }
 
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     saveActiveSessionId(nextActive);
 
     set({ sessions, activeSessionId: nextActive });
@@ -148,7 +150,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     const sessions = [newSession, ...get().sessions];
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     saveActiveSessionId(newSession.localId);
     set({ sessions, activeSessionId: newSession.localId });
     return newSession.localId;
@@ -180,7 +182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         : s
     );
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -188,7 +190,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessions = get().sessions.map((s) =>
       s.localId === id ? { ...s, backendSessionId: backendId, updatedAt: Date.now() } : s
     );
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -196,7 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessions = get().sessions.map((s) =>
       s.localId === id ? { ...s, title: title || s.title, updatedAt: Date.now() } : s
     );
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -204,7 +206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessions = get().sessions.map((s) =>
       s.localId === id ? { ...s, isEnded: true, updatedAt: Date.now() } : s
     );
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -218,7 +220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: [...s.messages, { id: messageId, role, content }]
       };
     });
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
     return messageId;
   },
@@ -236,6 +238,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ sessions });
   },
 
+  removeMessage: (sessionId, messageId) => {
+    const sessions = get().sessions.map((s) => {
+      if (s.localId !== sessionId) return s;
+      return { ...s, messages: s.messages.filter((m) => m.id !== messageId), updatedAt: Date.now() };
+    });
+    saveSessionsDebounced(sessions);
+    set({ sessions });
+  },
+
   replaceLastAssistantMessage: (sessionId, content) => {
     const sessions = get().sessions.map((s) => {
       if (s.localId !== sessionId) return s;
@@ -248,7 +259,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return { ...s, messages, updatedAt: Date.now() };
     });
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -256,7 +267,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessions = get().sessions.map((s) =>
       s.localId === id ? { ...s, ...patch, updatedAt: Date.now() } : s
     );
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
@@ -266,19 +277,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const history = [...(s.rollHistory || []), record].slice(-100);
       return { ...s, rollHistory: history, updatedAt: Date.now() };
     });
-    saveSessions(sessions);
+    saveSessionsDebounced(sessions);
     set({ sessions });
   },
 
-  spendLuck: (id, amount = 1) => {
-    const sessions = get().sessions.map((s) => {
-      if (s.localId !== id) return s;
-      const current = s.luckPoints ?? 0;
-      return { ...s, luckPoints: Math.max(0, current - amount), updatedAt: Date.now() };
-    });
-    saveSessions(sessions);
-    set({ sessions });
-  },
 
   savePreset: (name, data) => {
     const trimmed = name.trim();

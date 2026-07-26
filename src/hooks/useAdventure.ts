@@ -7,7 +7,6 @@ import { uid } from "../lib/utils";
 import type { RollRecord, Settings, StreamMetaView } from "../types";
 export interface RerollRequest {
   type: "reroll";
-  originalRoll: number;
 }
 export interface RegenerateRequest {
   type: "regenerate";
@@ -27,6 +26,8 @@ export function useAdventure() {
   const [liveMeta, setLiveMeta] = useState<StreamMetaView | null>(null);
   /** 是否正在掷骰动画中（用于锁住 UI） */
   const [isRolling, setIsRolling] = useState(false);
+  /** 最近一次失败的普通行动文本（供「重试」按钮使用），成功或取消后清空 */
+  const [lastFailedAction, setLastFailedAction] = useState("");
   /** 记录当前回合的玩家行动文本，供掷骰历史使用 */
   const currentActionRef = useRef("");
 
@@ -92,6 +93,7 @@ export function useAdventure() {
       runStreamInteraction(params, {
         addMessage: storeActions.current.addMessage,
         appendToMessage: storeActions.current.appendToMessage,
+        removeMessage: storeActions.current.removeMessage,
         persistSessionsNow: storeActions.current.persistSessionsNow,
         setStatus: storeActions.current.setStatus,
         stopWaitingTicker,
@@ -294,8 +296,8 @@ export function useAdventure() {
 
       const body: Record<string, unknown> = { sessionId: backendSessionId, action: finalAction };
       if (followUp?.type === "reroll") {
+        // 原骰值由服务端从掷骰历史自取，客户端不上报
         body.reroll = true;
-        body.originalRoll = followUp.originalRoll;
       } else if (followUp?.type === "regenerate") {
         body.regenerate = true;
         // 重生成不需要 action，但保留以便后端兼容
@@ -321,17 +323,26 @@ export function useAdventure() {
       // 兜底：请求结束后强制复位掷骰动画，防止 rolling 状态卡住导致界面被遮罩锁死
       setIsRolling(false);
 
-      if (!result.ok && "aborted" in result && result.aborted) {
+      if (result.ok) {
+        setLastFailedAction("");
+      } else if ("aborted" in result && result.aborted) {
         storeActions.current.setStatus("请求已取消。", "idle");
-      } else if (!result.ok && followUp) {
+        setLastFailedAction("");
+      } else if (followUp) {
         storeActions.current.setStatus(`${followUp.type === "reroll" ? "重投" : "重写"}失败：${result.error}`, "error");
-      } else if (!result.ok) {
-        // 普通行动失败也要复位并提示，避免用户以为“没反应”
+      } else {
+        // 普通行动失败：提示并记录失败行动，供「重试」按钮一键重发
         storeActions.current.setStatus(`行动失败：${result.error}`, "error");
+        setLastFailedAction(finalAction);
       }
     },
     [startWaitingTicker, executeStreamInteraction, stopWaitingTicker, handleMeta, beginStreamAbortController]
   );
+
+  /** 用户主动停止当前流式生成 */
+  const cancelStream = useCallback(() => {
+    abortActiveStream();
+  }, [abortActiveStream]);
 
   return {
     isStarting,
@@ -339,6 +350,8 @@ export function useAdventure() {
     isRolling,
     liveMeta,
     setLiveMeta,
+    lastFailedAction,
+    cancelStream,
     startAdventureForSession,
     sendActionText
   };

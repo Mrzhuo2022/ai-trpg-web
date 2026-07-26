@@ -94,7 +94,50 @@ function pruneSessionsForStorage(sessions: Session[]): Session[] {
   return kept;
 }
 
+/**
+ * 防抖持久化：会话在流式/连续操作中每次 store 变更都要求落盘，
+ * 全量 JSON.stringify 开销大；合并 500ms 内的写入为一次。
+ * 需要立即落盘时（如流结束、页面卸载）调用 flushSessionsSave / saveSessions。
+ */
+let pendingSessions: Session[] | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function saveSessionsDebounced(sessions: Session[]) {
+  pendingSessions = sessions;
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    if (pendingSessions) {
+      const toSave = pendingSessions;
+      pendingSessions = null;
+      saveSessions(toSave);
+    }
+  }, 500);
+}
+
+export function flushSessionsSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (pendingSessions) {
+    const toSave = pendingSessions;
+    pendingSessions = null;
+    saveSessions(toSave);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushSessionsSave);
+}
+
 export function saveSessions(sessions: Session[]) {
+  // 直接保存视为最新状态：丢弃 pending 的防抖写入，避免旧数据稍后覆盖新数据
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  pendingSessions = null;
   try {
     const pruned = pruneSessionsForStorage(sessions);
     localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(pruned));

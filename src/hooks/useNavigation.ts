@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 export type ViewMode = "play" | "library" | "admin";
 
@@ -19,13 +19,15 @@ export function useNavigation() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const navigate = (next: ViewMode) => {
-    if (next === view) return;
-    const path =
-      next === "admin" ? "/admin" : next === "play" ? "/play" : "/library";
-    window.history.pushState(null, "", path);
-    setView(next);
-  };
+  const navigate = useCallback((next: ViewMode) => {
+    setView((current) => {
+      if (next === current) return current;
+      const path =
+        next === "admin" ? "/admin" : next === "play" ? "/play" : "/library";
+      window.history.pushState(null, "", path);
+      return next;
+    });
+  }, []);
 
   return { view, navigate } as const;
 }

@@ -89,6 +89,13 @@ export async function streamPost(
   const retryDelay = options?.retryDelay ?? 1000;
   const signal = options?.signal;
   let lastError: Error | null = null;
+  // 一旦向上层投递过任何事件（token/meta 已被 append 进 UI，服务端可能已结算行动），
+  // 断线后不可再自动重试：重试会导致叙事重复追加、行动被重复执行
+  let deliveredAnyEvent = false;
+  const trackedOnEvent: StreamEventHandler = (event, payload) => {
+    deliveredAnyEvent = true;
+    onEvent(event, payload);
+  };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
@@ -103,7 +110,7 @@ export async function streamPost(
     }
 
     try {
-      return await streamPostAttempt(url, body, onEvent, signal);
+      return await streamPostAttempt(url, body, trackedOnEvent, signal);
     } catch (err) {
       lastError = err as Error;
       const error = err as StreamError;
@@ -114,6 +121,10 @@ export async function streamPost(
       }
       // Don't retry if it's a client error (4xx)
       if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+        throw error;
+      }
+      // Don't retry after partial data was delivered (would duplicate content/actions)
+      if (deliveredAnyEvent) {
         throw error;
       }
     }

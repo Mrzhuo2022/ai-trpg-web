@@ -19,12 +19,15 @@ export interface PlayViewProps {
   /** 本回合判定卡片是否应该显示（rolling 完成后） */
   showCheckCard: boolean;
   chatRef: Ref<HTMLDivElement>;
+  /** 最近一次失败的行动文本（非空时显示重试条） */
+  lastFailedAction?: string;
   onNavigate: () => void;
   onNavigateToAdmin: () => void;
   onStartAdventure: () => void;
   onSendAction: (text: string) => void;
-  onReroll: (originalRoll: number, action: string) => void;
+  onReroll: (action: string) => void;
   onRegenerate: () => void;
+  onCancelStream?: () => void;
 }
 
 const PRESSURE_META: Record<number, { label: string; tone: string }> = {
@@ -45,12 +48,14 @@ export const PlayView = memo(function PlayView({
   latestMetaView = null,
   showCheckCard,
   chatRef,
+  lastFailedAction = "",
   onNavigate,
   onNavigateToAdmin,
   onStartAdventure,
   onSendAction,
   onReroll,
-  onRegenerate
+  onRegenerate,
+  onCancelStream
 }: PlayViewProps) {
   const [actionInput, setActionInput] = useState("");
   const [inputExpanded, setInputExpanded] = useState(false);
@@ -59,6 +64,7 @@ export const PlayView = memo(function PlayView({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const canSend = Boolean(activeSession?.backendSessionId) && !isSending && !isCurrentRoundEnded && !isRolling;
+  const isStreamActive = isSending || isStarting;
   const showOptionsHint =
     Boolean(activeSession?.backendSessionId) && !isCurrentRoundEnded && quickOptions.length === 0 && !isSending;
 
@@ -91,6 +97,8 @@ export const PlayView = memo(function PlayView({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // 中文/日文输入法组词中按 Enter 是确认候选词，不应发送
+      if (e.nativeEvent.isComposing) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSubmit();
@@ -106,9 +114,9 @@ export const PlayView = memo(function PlayView({
     setActionInput(el.value);
   }, []);
 
-  const handleReroll = useCallback((originalRoll: number) => {
+  const handleReroll = useCallback(() => {
     const lastRoll = rollHistory[rollHistory.length - 1];
-    onReroll(originalRoll, lastRoll?.action || "");
+    onReroll(lastRoll?.action || "");
   }, [rollHistory, onReroll]);
 
   return (
@@ -219,6 +227,16 @@ export const PlayView = memo(function PlayView({
 
       {/* ── 极简底部：快捷行动 + 输入 ── */}
       <div className="play-bottom">
+        {/* 失败重试条 */}
+        {lastFailedAction && canSend ? (
+          <div className="retry-bar">
+            <span className="retry-bar-text">上次行动发送失败</span>
+            <button className="btn btn-sm" onClick={() => onSendAction(lastFailedAction)}>
+              重试「{lastFailedAction.slice(0, 20)}{lastFailedAction.length > 20 ? "…" : ""}」
+            </button>
+          </div>
+        ) : null}
+
         {/* 快捷行动芯片（横向） */}
         {!isCurrentRoundEnded && (quickOptions.length > 0 || showOptionsHint) ? (
           <div className="quick-actions">
@@ -240,29 +258,39 @@ export const PlayView = memo(function PlayView({
           </div>
         ) : null}
 
-        {/* 输入框 */}
-        {canSend ? (
+        {/* 输入框：发送期间保持渲染（disabled），避免底栏跳变；用户可预输入下一步 */}
+        {Boolean(activeSession?.backendSessionId) && !isCurrentRoundEnded ? (
           <div className={`composer ${inputExpanded ? "is-expanded" : ""}`}>
             <textarea
               ref={inputRef}
               className="composer-input"
               rows={1}
-              placeholder="输入自定义行动…"
+              placeholder={isSending ? "回应生成中…" : "输入自定义行动…"}
               value={actionInput}
               onChange={adjustHeight}
               onKeyDown={handleKeyDown}
               onFocus={() => setInputExpanded(true)}
-              disabled={isSending}
               style={{ height: "auto", maxHeight: "200px" }}
             />
-            <button
-              className="composer-send"
-              onClick={handleSubmit}
-              disabled={!actionInput.trim() || isSending}
-              aria-label="发送"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
-            </button>
+            {isStreamActive && onCancelStream ? (
+              <button
+                className="composer-send composer-stop"
+                onClick={onCancelStream}
+                title="停止生成"
+                aria-label="停止生成"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+              </button>
+            ) : (
+              <button
+                className="composer-send"
+                onClick={handleSubmit}
+                disabled={!actionInput.trim() || !canSend}
+                aria-label="发送"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+              </button>
+            )}
           </div>
         ) : null}
 

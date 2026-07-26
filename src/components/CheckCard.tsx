@@ -12,7 +12,7 @@ export interface CheckCardProps {
   busy: boolean;
   /** 剩余运气点 */
   luckPoints: number;
-  onReroll: (originalRoll: number) => void;
+  onReroll: () => void;
   onRegenerate: () => void;
 }
 
@@ -133,7 +133,7 @@ export const CheckCard = memo(function CheckCard({
           {canReroll ? (
             <button
               className="check-action check-action--reroll"
-              onClick={() => onReroll(roll)}
+              onClick={onReroll}
               title={`消耗 1 点运气重投（剩 ${luckPoints} 点）`}
             >
               ⟲ 重投（剩 {luckPoints}）

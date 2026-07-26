@@ -18,5 +18,9 @@ export const SERVER_CONFIG = Object.freeze({
   maxSessionMessages: Math.max(8, envPositiveInt("MAX_SESSION_MESSAGES", 42)),
   maxDiagnostics: Math.max(20, envPositiveInt("MAX_DIAGNOSTICS", 300)),
   defaultMaxTokens: Math.max(256, envPositiveInt("DEFAULT_MAX_TOKENS", 1000)),
-  initialLuckPoints: Math.max(0, envPositiveInt("INITIAL_LUCK_POINTS", 3))
+  initialLuckPoints: Math.max(0, envPositiveInt("INITIAL_LUCK_POINTS", 3)),
+  // 诊断接口访问令牌：设置后 /api/diagnostics/recent 需携带 X-Admin-Token 请求头
+  adminToken: (process.env.ADMIN_TOKEN || "").trim(),
+  // 每 IP 每分钟的游戏请求上限（start/act 会消耗上游 LLM token）
+  rateLimitPerMinute: Math.max(1, envPositiveInt("RATE_LIMIT_PER_MINUTE", 30))
 });

@@ -115,14 +115,8 @@ const actRequestSchema = z.object({
   // 玩家请求重投上一次失败的判定（消耗 1 点运气）
   reroll: z.preprocess((value) => value === true || value === "true", z.boolean()).optional(),
   // 玩家请求重新生成上一回合叙事（不改骰子，不消耗运气）
-  regenerate: z.preprocess((value) => value === true || value === "true", z.boolean()).optional(),
-  // 重投时附带的原始骰值，用于“保留两次中更好的结果”
-  originalRoll: z
-    .preprocess((value) => {
-      const n = Number(value);
-      return Number.isFinite(n) ? Math.min(20, Math.max(1, Math.floor(n))) : undefined;
-    }, z.number().int().min(1).max(20))
-    .optional()
+  regenerate: z.preprocess((value) => value === true || value === "true", z.boolean()).optional()
+  // 注：原骰值由服务端从 rollHistory 自取，不接受客户端上报（防作弊）
 });
 
 const diagnosticsQuerySchema = z.object({
@@ -240,8 +234,12 @@ export function normalizeDonePayload(payload) {
 }
 
 export function normalizeMetaPayload(payload) {
-  const parsed = metaPayloadSchema.parse(ensureRecord(payload));
+  const record = ensureRecord(payload);
+  const parsed = metaPayloadSchema.parse(record);
   return {
+    // 保留服务端下发的结构化判定字段（roll/dc/luckPoints/pressure/damage/characterState 等），
+    // 仅对公共字段做归一化，避免白名单丢字段导致前端判定 UI 拿不到数据
+    ...record,
     options: sanitizeMetaOptions(parsed.options),
     check: parsed.check,
     status: parsed.status,
